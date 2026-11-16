@@ -888,9 +888,15 @@ export function parseInline(str, refs, istate) {
     if (c === 64) { // @ — possible extended email autolink
       const em = parseEmailAutolink(str, i);
       if (!istate.inLink && em && em.start < i) {
-        // local part is the tail of buf
+        // the local part cannot extend before the current text buffer: a
+        // leading run of '_' that is an emphasis delimiter (the __ of
+        // __email__) is not part of the address
+        const bufStart = i - buf.length;
+        if (em.start < bufStart) em.start = bufStart;
         const localLen = i - em.start;
-        if (buf.length >= localLen && buf.slice(buf.length - localLen) === str.slice(em.start, i)) {
+        const local = str.slice(em.start, i);
+        if (local.length > 0 && local[0] !== '.' && local[local.length - 1] !== '.' &&
+          buf.length >= localLen && buf.slice(buf.length - localLen) === local) {
           buf = buf.slice(0, buf.length - localLen);
           flush();
           const text = str.slice(em.start, em.end);
