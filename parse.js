@@ -579,17 +579,24 @@ function parseHostPath(str, j, prefix) {
       p++;
     }
     end = p;
-    while (end > domainEnd) {
-      const c = str.charCodeAt(end - 1);
-      if (c === 46 || c === 44 || c === 59 || c === 58 || c === 33 || c === 63 || c === 42 || c === 95 || c === 126 || c === 39 || c === 34) end--;
-      else break;
+    // strip trailing punctuation and unbalanced ')' repeatedly until
+    // stable: removing a ')' can expose punctuation (foo..) -> foo),
+    // and removing punctuation can expose another ')' (foo).) -> foo)
+    let changed = true;
+    while (changed) {
+      changed = false;
+      while (end > domainEnd) {
+        const c = str.charCodeAt(end - 1);
+        if (c === 46 || c === 44 || c === 59 || c === 58 || c === 33 || c === 63 || c === 42 || c === 95 || c === 126 || c === 39 || c === 34) { end--; changed = true; }
+        else break;
+      }
+      let d2 = 0;
+      for (let q = domainEnd; q < end; q++) {
+        if (str.charCodeAt(q) === 40) d2++;
+        else if (str.charCodeAt(q) === 41) d2--;
+      }
+      while (d2 < 0 && end > domainEnd && str.charCodeAt(end - 1) === 41) { end--; d2++; changed = true; }
     }
-    let d2 = 0;
-    for (let q = domainEnd; q < end; q++) {
-      if (str.charCodeAt(q) === 40) d2++;
-      else if (str.charCodeAt(q) === 41) d2--;
-    }
-    while (d2 < 0 && end > domainEnd && str.charCodeAt(end - 1) === 41) { end--; d2++; }
   }
   return end;
 }
