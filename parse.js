@@ -664,7 +664,9 @@ export function parseInline(str, refs) {
         flush();
         nodes.splice(startIdx, nodes.length - startIdx, linkNode);
         brackets.splice(bi, 1);
-        for (const b of brackets) b.active = false;
+        // a link cannot contain another link, but an image CAN be inside
+        // a link, so only a link deactivates the remaining brackets
+        if (!br.image) for (const b of brackets) b.active = false;
         i = link.end; continue;
       }
       brackets.splice(bi, 1);
@@ -821,7 +823,11 @@ function splitTableRow(line) {
   const endsPipe = e >= 0 && line.charCodeAt(e) === 124;
   while (i < n) {
     const c = line.charCodeAt(i);
-    if (c === 92 && i + 1 < n && isAsciiPunct(line.charCodeAt(i + 1))) { cur += line[i] + line[i + 1]; i += 2; continue; }
+    if (c === 92 && i + 1 < n && isAsciiPunct(line.charCodeAt(i + 1))) {
+      // \| is a table-level escape: the pipe stays, the backslash goes
+      if (line.charCodeAt(i + 1) === 124) { cur += '|'; i += 2; continue; }
+      cur += line[i] + line[i + 1]; i += 2; continue;
+    }
     if (c === 96) {
       let j = i; while (j < n && line.charCodeAt(j) === 96) j++;
       const run = j - i;
