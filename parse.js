@@ -364,6 +364,11 @@ function aTagKind(tagStr) {
   if (tagStr.slice(j, k).toLowerCase() !== 'a') return null;
   if (closing) return 'a-close';
   if (tagStr.length >= 2 && tagStr.charCodeAt(tagStr.length - 2) === 47 && tagStr.charCodeAt(tagStr.length - 1) === 62) return null; // <a ... />
+  // a bare <a> (no attributes, only whitespace before '>') is an anchor,
+  // not a link: it does not open a link context
+  let m = k;
+  while (m < tagStr.length - 1 && (tagStr.charCodeAt(m) === 32 || tagStr.charCodeAt(m) === 9 || tagStr.charCodeAt(m) === 10)) m++;
+  if (m === tagStr.length - 1) return null;
   return 'a-open';
 }
 
