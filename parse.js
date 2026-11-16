@@ -844,6 +844,12 @@ function parseRefdefs(text, refs) {
   const n = text.length;
   let pos = 0, any = false;
   while (pos < n) {
+    // skip leading whitespace (up to 3 spaces indent, then newlines)
+    let p = pos;
+    while (p < n && (text.charCodeAt(p) === 32 || text.charCodeAt(p) === 9)) p++;
+    if (p < n && text.charCodeAt(p) === 10) { pos = p + 1; continue; }
+    if (p - pos > 3) break;
+    pos = p;
     if (text.charCodeAt(pos) !== 91) break; // [
     const lab = parseLabel(text, pos);
     if (!lab) break;
@@ -1102,7 +1108,6 @@ function parseBlocks(src, refs) {
   }
 
   function matchQuote(line) {
-    if (isBlankL(line)) return true; // blank line: blockquote continues
     const ind = indentCols(line);
     if (ind > 3) return false;
     const st = saveL(line);
@@ -1121,7 +1126,7 @@ function parseBlocks(src, refs) {
   }
   // leaf match: 0 = no match, 1 = match (content line), 2 = closing fence (line consumed), 3 = html end line (line is content, then close)
   function matchLeaf(line, blk, blank) {
-    if (blk.t === 'para') return blank ? 0 : 1;
+    if (blk.t === 'para') return isBlankL(line) ? 0 : 1;
     if (blk.t === 'code') {
       if (blk.fenced) {
         const st = saveL(line);
@@ -1578,6 +1583,8 @@ function parseBlocks(src, refs) {
         }
         continue;
       }
+      // lazy continuation: leading whitespace is stripped
+      if (lazy) { while (curCh(line) === 32 || curCh(line) === 9) advCh(line); }
       addParaLine(t, line);
       continue;
     }
@@ -1586,6 +1593,7 @@ function parseBlocks(src, refs) {
     while (guard++ < 60) {
       const tt = tip();
       if (tt.t === 'para' || tt.t === 'code' || tt.t === 'html' || tt.t === 'heading' || tt.t === 'hr') break;
+      if (isBlankL(line)) break; // blank remainder: no new block
       const opened = tryOpenBlock(line, blank, isLast, false);
       if (!opened) break;
       if (opened.t === 'quote' || opened.t === 'list' || opened.t === 'item') continue;
