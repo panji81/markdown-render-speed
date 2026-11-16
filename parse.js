@@ -265,6 +265,8 @@ function parseLinkTail(str, j, bracket, refs) {
       const ref = refs.get(key);
       if (ref) return { href: ref.dest, title: ref.title, end: lab.end };
     }
+    // a '[label]' follows but does not resolve: no shortcut fallback
+    return null;
   }
   // shortcut reference: label is the bracket's own text
   const key = normalizeLabel(str.slice(bracket.strIdx + 1, bracket.closeIdx));
@@ -601,6 +603,12 @@ function parseSchemeAutolink(str, i) {
   for (let q = 0; q < tld.length; q++) {
     const c = tld.charCodeAt(q);
     if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122))) return null;
+  }
+  // a scheme: autolink includes at most one path segment (xmpp:.../txt
+  // links, but /txt/bin stops after /txt)
+  if (domEnd !== -1 && domEnd < url.length) {
+    const secondSlash = url.indexOf('/', domEnd + 1);
+    if (secondSlash !== -1) end = urlStart + secondSlash;
   }
   return { end, text: str.slice(i, end) };
 }
@@ -1316,9 +1324,11 @@ function parseBlocks(src, refs) {
     if (r.startsWith('<![CDATA[')) return { type: 5 };
     const m6 = r.match(/^<\/?([A-Za-z][A-Za-z0-9-]*)([\s>]|\/>|$)/);
     if (m6 && BLOCK_TAGS.has(m6[1].toLowerCase())) {
-      // the tag must be well-formed (valid attributes); otherwise it is
-      // not an HTML block (e.g. <a h*#ref="hi">, <a href='bar'title=x>)
-      if (parseHtmlTag(r, 0)) return { type: 6 };
+      // a complete tag on this line must be well-formed (valid attributes);
+      // an incomplete tag (no '>' on the line) starts a multi-line block
+      const tag = parseHtmlTag(r, 0);
+      if (tag) return { type: 6 };
+      if (r.indexOf('>', m6[0].length) === -1) return { type: 6 };
       return null;
     }
     return null;
