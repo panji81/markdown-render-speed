@@ -1067,6 +1067,32 @@ function tryTable(lines) {
   return { align, header, rows };
 }
 
+// A line of 0-3 spaces + a single tab (+ end of line): marked treats it
+// as an empty table row, not a blank line (4+ spaces, a second tab, or a
+// trailing space ends the table instead).
+function isTableTabLine(L) {
+  let p = L.pos, spaces = 0;
+  while (p < L.s.length && L.s.charCodeAt(p) === 32 && spaces < 4) { p++; spaces++; }
+  if (spaces >= 4) return false;
+  if (p >= L.s.length || L.s.charCodeAt(p) !== 9) return false;
+  return p + 1 >= L.s.length;
+}
+
+// Does this paragraph's first two lines form a valid table head
+// (same validation as tryTable's header/delimiter part)?
+function paraIsTableHead(node) {
+  const ls = node.lines;
+  if (!ls || ls.length < 2) return false;
+  let lead = 0;
+  for (let k = 0; k < ls[1].length && ls[1].charCodeAt(k) === 32; k++) lead++;
+  if (lead >= 4) return false;
+  const header = splitTableRow(ls[0]);
+  const delim = splitTableRow(ls[1]);
+  if (delim.length !== header.length) return false;
+  for (const cell of delim) if (!/^:?-+:?$/.test(cell.trim())) return false;
+  return true;
+}
+
 function skipWs1(text, k) {
   const n = text.length;
   while (k < n && (text.charCodeAt(k) === 32 || text.charCodeAt(k) === 9)) k++;
@@ -1280,7 +1306,13 @@ function parseBlocks(src, refs) {
   const doc = { t: 'doc', children: [] };
   const stack = [doc];
   const tip = () => stack[stack.length - 1];
-  const addChild = (node) => { const p = tip(); p.children.push(node); node._parent = p; node._lastLineBlank = false; return node; };
+  // A block that gains content after a blank line is no longer
+  // blank-terminated: clear the flag on it and its ancestors, so a
+  // blank line inside a nested list does not loosen an outer list
+  // whose item keeps going (cm-319), while a blank that ends an
+  // item before the next item still loosens the list (cm-326).
+  const clearBlank = (node) => { let n = node; while (n) { n._lastLineBlank = false; n = n._parent; } };
+  const addChild = (node) => { const p = tip(); p.children.push(node); node._parent = p; node._lastLineBlank = false; node._addedAfterBlank = p._lastLineBlank; clearBlank(p); return node; };
   const openBlock = (node) => { addChild(node); stack.push(node); return node; };
 
   function finalize(node) {
@@ -1303,6 +1335,10 @@ function parseBlocks(src, refs) {
       if (rest !== null) content = rest;
       if (content === '') {
         const p = node._parent;
+        // a paragraph of only link reference definitions is invisible:
+        // it must not count as content after the blank, so restore the
+        // blank mark it cleared when it was added (cm-317)
+        if (node._addedAfterBlank) { let n = p; while (n) { n._lastLineBlank = true; n = n._parent; } }
         if (p) { const idx = p.children.indexOf(node); if (idx >= 0) p.children.splice(idx, 1); }
         node.t = 'dead';
         return;
@@ -1594,6 +1630,7 @@ function parseBlocks(src, refs) {
     // non-matching lines (after a blank line a line must match the
     // container to stay in the block).
     node._prevBlank = isBlankL(line);
+    clearBlank(node);
     if (node.inContainer) {
       // Inside a list item / blockquote, the container indent was already
       // consumed and leading tabs expand by their effective column (the
@@ -1616,12 +1653,14 @@ function parseBlocks(src, refs) {
   }
   function addHtmlLine(node, line, isLast) {
     node.lines.push(remStr(line));
+    clearBlank(node);
     if (isLast) node._eof = true;
   }
   function addParaLine(node, line) {
     // Paragraph content keeps the line's leading spaces (up to 3); the
     // container indent was already consumed by phase-1 matching.
     node.lines.push(remStr(line));
+    clearBlank(node);
   }
 
   // Try to open a new block at the current line position. Returns the node
@@ -1866,19 +1905,17 @@ function parseBlocks(src, refs) {
     const isLast = li === lines.length - 1;
     const line = LC(lines[li]);
     const blank = isBlankL(line);
+    // a line of 0-3 spaces + a single tab continues a table-candidate
+    // paragraph as an empty row (marked behaviour); it is not a blank
+    // line for looseness or paragraph closing in that case
+    const tableTab = blank && tip().t === 'para' && isTableTabLine(line) && paraIsTableHead(tip());
     // a blank line inside a code block is code content, not a separator
-    // mark the blank line only on the blocks down to the innermost list
-    // item: a blank line inside a nested list loosens that list, not the
-    // outer list that contains it
-    if (blank && tip().t !== 'code') {
-      let deepestItem = -1;
-      for (let k = stack.length - 1; k >= 1; k--) if (stack[k].t === 'item') { deepestItem = k; break; }
-      // include the innermost item's parent list: that list is a child of
-      // the outer item, and its blank flag decides the outer list's
-      // looseness when a paragraph follows it (cm-325); harmless when it
-      // is the outer item's last child (cm-319)
-      const lo = deepestItem === -1 ? stack.length - 1 : Math.max(1, deepestItem - 1);
-      for (let k = stack.length - 1; k >= lo; k--) stack[k]._lastLineBlank = true;
+    // mark the blank line on every open block: a block that gains content
+    // afterwards has the mark cleared (see clearBlank), so a blank inside
+    // a nested list loosens that list, while a blank that ends an outer
+    // item before the next item loosens the outer list (cm-326)
+    if (blank && tip().t !== 'code' && !tableTab) {
+      for (let k = stack.length - 1; k >= 1; k--) stack[k]._lastLineBlank = true;
     }
     // Phase 1: match open containers
     let lastMatched = 0;
@@ -1921,7 +1958,7 @@ function parseBlocks(src, refs) {
       // A spaces-only remainder is paragraph content when a container
       // marker was consumed (the spaces follow the marker); otherwise
       // the line is blank and closes the paragraph.
-      if (blk.t === 'para' && isBlankL(line) && !markerConsumed) { break; }
+      if (blk.t === 'para' && isBlankL(line) && !markerConsumed && !tableTab) { break; }
       const res = matchLeaf(line, blk, blank);
       if (res === 1) { lastMatched = i; }
       else if (res === 2) { consumed = true; lastMatched = i - 1; }
