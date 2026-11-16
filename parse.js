@@ -188,17 +188,19 @@ function parseLinkDestTitle(str, j) {
   while (k < n && isSpace(str.charCodeAt(k))) k++;
   if (k >= n) return null;
   let href = null;
-  if (str.charCodeAt(k) === 60) { // <...>
+  if (str.charCodeAt(k) === 60) { // <...>: backslash escapes apply; \> does not close
     let m = k + 1;
     let ok = false;
+    let dest = '';
     while (m < n) {
       const c = str.charCodeAt(m);
       if (c === 10 || c === 60) break;
+      if (c === 92 && m + 1 < n && isAsciiPunct(str.charCodeAt(m + 1))) { dest += str[m + 1]; m += 2; continue; }
       if (c === 62) { ok = true; break; }
-      m++;
+      dest += str[m]; m++;
     }
     if (!ok) return null;
-    href = unescapeStr(str.slice(k + 1, m));
+    href = dest;
     k = m + 1;
   } else {
     // bare destination: no spaces/controls, balanced parens, backslash escapes
@@ -215,7 +217,6 @@ function parseLinkDestTitle(str, j) {
       }
       dest += str[m]; m++;
     }
-    if (m === k) return null;
     if (depth !== 0) return null;
     href = dest;
     k = m;
@@ -280,6 +281,9 @@ function processEmphasis(nodes, delims) {
     for (let j = ci - 1; j >= 0; j--) {
       const opener = delims[j];
       if (opener.ch !== closer.ch || !opener.canOpen || opener.len === 0) continue;
+      // a delimiter absorbed inside an already-formed emphasis node is
+      // no longer a direct child here and cannot open across its boundary
+      if (nodes.indexOf(opener) === -1) continue;
       if ((opener.canClose || closer.canOpen) && ((opener.len + closer.len) % 3 === 0) && (opener.len % 3 !== 0 || closer.len % 3 !== 0)) continue;
       oi = j; break;
     }
@@ -898,15 +902,16 @@ function parseRefdefs(text, refs) {
     if (k >= n) break;
     let dest = null;
     if (text.charCodeAt(k) === 60) {
-      let m = k + 1, ok = false;
+      let m = k + 1, ok = false, d = '';
       while (m < n) {
         const c = text.charCodeAt(m);
         if (c === 10 || c === 60) break;
+        if (c === 92 && m + 1 < n && isAsciiPunct(text.charCodeAt(m + 1))) { d += text[m + 1]; m += 2; continue; }
         if (c === 62) { ok = true; break; }
-        m++;
+        d += text[m]; m++;
       }
       if (!ok) break;
-      dest = unescapeStr(text.slice(k + 1, m));
+      dest = d;
       k = m + 1;
     } else {
       let m = k, d = '', depth = 0;
