@@ -380,8 +380,10 @@ function parseHtmlTag(str, i) {
   if (str.charCodeAt(i) !== 60) return null; // <
   if (i + 1 >= n) return null;
   const c1 = str.charCodeAt(i + 1);
-  // comment <!-- ... -->
+  // comment <!-- ... -->; <!--> and <!---> are complete empty comments
   if (c1 === 33 && str.startsWith('!--', i + 1)) {
+    if (str.charCodeAt(i + 4) === 62) return { end: i + 5 }; // <!-->
+    if (str.charCodeAt(i + 4) === 45 && str.charCodeAt(i + 5) === 62) return { end: i + 6 }; // <!--
     const e = str.indexOf('-->', i + 4);
     if (e === -1) return null;
     return { end: e + 3 };
@@ -440,6 +442,7 @@ function parseHtmlTag(str, i) {
       if ((d >= 65 && d <= 90) || (d >= 97 && d <= 122) || (d >= 48 && d <= 57) || d === 95 || d === 58 || d === 46 || d === 45) j++;
       else break;
     }
+    const afterName = j;
     while (j < n && isSpace(str.charCodeAt(j))) j++;
     if (j < n && str.charCodeAt(j) === 61) { // =
       j++;
@@ -458,6 +461,10 @@ function parseHtmlTag(str, i) {
         }
         if (j === n) return null;
       }
+    } else {
+      // boolean attribute (no '='): rewind past the skipped whitespace so
+      // the next attribute still sees whitespace before it
+      j = afterName;
     }
   }
 }
@@ -602,7 +609,12 @@ export function parseInline(str, refs) {
     const c = str.charCodeAt(i);
     if (c === 92) { // backslash
       const nc = i + 1 < n ? str.charCodeAt(i + 1) : 0;
-      if (nc === 10) { flush(); nodes.push({ t: 'br' }); i += 2; continue; }
+      if (nc === 10) {
+        flush(); nodes.push({ t: 'br' }); i += 2;
+        // leading spaces of the next line are indentation, not content
+        while (i < n && (str.charCodeAt(i) === 32 || str.charCodeAt(i) === 9)) i++;
+        continue;
+      }
       if (isAsciiPunct(nc)) { buf += str[i + 1]; i += 2; continue; }
       buf += '\\'; i++; continue;
     }
@@ -732,6 +744,10 @@ export function parseInline(str, refs) {
       if (sp >= 2) {
         buf = buf.slice(0, buf.length - sp);
         flush(); nodes.push({ t: 'br' });
+        i++;
+        // leading spaces of the next line are indentation, not content
+        while (i < n && (str.charCodeAt(i) === 32 || str.charCodeAt(i) === 9)) i++;
+        continue;
       } else {
         buf += '\n';
       }
@@ -1251,7 +1267,12 @@ function parseBlocks(src, refs) {
     if (r.length >= 3 && r[0] === '<' && r[1] === '!' && /[A-Za-z]/.test(r[2])) return { type: 4 };
     if (r.startsWith('<![CDATA[')) return { type: 5 };
     const m6 = r.match(/^<\/?([A-Za-z][A-Za-z0-9-]*)([\s>]|\/>|$)/);
-    if (m6 && BLOCK_TAGS.has(m6[1].toLowerCase())) return { type: 6 };
+    if (m6 && BLOCK_TAGS.has(m6[1].toLowerCase())) {
+      // the tag must be well-formed (valid attributes); otherwise it is
+      // not an HTML block (e.g. <a h*#ref="hi">, <a href='bar'title=x>)
+      if (parseHtmlTag(r, 0)) return { type: 6 };
+      return null;
+    }
     return null;
   }
   function htmlStart7(r) {
@@ -1281,15 +1302,35 @@ function parseBlocks(src, refs) {
     if (i < r.length && r[i] !== ' ' && r[i] !== '\t' && r[i] !== '/' && r[i] !== '>') return null;
     let j = i;
     while (j < r.length) {
+      const beforeWs = j;
+      while (j < r.length && (r[j] === ' ' || r[j] === '\t')) j++;
+      if (j >= r.length) return null;
       const c = r[j];
       if (c === '>') return { name: name.toLowerCase(), isClose: false, end: j + 1 };
-      if (c === '"' || c === "'") {
-        const q = c; j++;
-        while (j < r.length && r[j] !== q) j++;
-        if (j >= r.length) return null;
-        j++; continue;
+      if (c === '/') {
+        if (j + 1 < r.length && r[j + 1] === '>') return { name: name.toLowerCase(), isClose: false, end: j + 2 };
+        return null;
       }
+      // attribute: must be preceded by whitespace and start with a valid char
+      if (j === beforeWs) return null;
+      if (!/[A-Za-z_:]/.test(c)) return null;
       j++;
+      while (j < r.length && /[A-Za-z0-9_.:-]/.test(r[j])) j++;
+      while (j < r.length && (r[j] === ' ' || r[j] === '\t')) j++;
+      if (j < r.length && r[j] === '=') {
+        j++;
+        while (j < r.length && (r[j] === ' ' || r[j] === '\t')) j++;
+        if (j >= r.length) return null;
+        const q = r[j];
+        if (q === '"' || q === "'") {
+          const e = r.indexOf(q, j + 1);
+          if (e === -1) return null;
+          j = e + 1;
+        } else {
+          while (j < r.length && !/[ \t>"'=<>`]/.test(r[j])) j++;
+          if (j >= r.length) return null;
+        }
+      }
     }
     return null;
   }
