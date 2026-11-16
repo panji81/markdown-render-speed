@@ -502,7 +502,9 @@ function parseHostPath(str, j, prefix) {
   }
   const domainEnd = k;
   let end = domainEnd;
-  if (end < n && str.charCodeAt(end) === 47) {
+  // optional path / query / fragment (a query or fragment may follow the
+  // host directly, without a '/': https://host?q=1#f)
+  if (end < n && (str.charCodeAt(end) === 47 || str.charCodeAt(end) === 63 || str.charCodeAt(end) === 35)) {
     let p = end;
     let depth = 0;
     while (p < n) {
@@ -820,9 +822,9 @@ export function parseInline(str, refs) {
         }
       }
     }
-    if (c === 119 || c === 87) { // w/W — possible www. autolink
+    if (c === 119) { // w — possible www. autolink (lowercase only)
       if ((i === 0 || !((str.charCodeAt(i - 1) >= 65 && str.charCodeAt(i - 1) <= 90) || (str.charCodeAt(i - 1) >= 97 && str.charCodeAt(i - 1) <= 122) || (str.charCodeAt(i - 1) >= 48 && str.charCodeAt(i - 1) <= 57))) &&
-        str.slice(i, i + 4).toLowerCase() === 'www.') {
+        str.slice(i, i + 4) === 'www.') {
         const w = parseWwwAutolink(str, i);
         if (w) {
           flush(); nodes.push({ t: 'link', href: 'http://' + w.text, title: null, c: [{ t: 'text', s: w.text }] });
@@ -1720,9 +1722,13 @@ function parseBlocks(src, refs) {
       if (blk.t === 'quote') {
         if (isBlankL(line)) blankHit = true;
         if (!matchQuote(line)) {
-          // Lazy continuation only if the line does NOT start a new block
-          // that can interrupt the paragraph.
-          if (tip().t === 'para' && !blank && !wouldInterrupt(line, tipInList())) { lazy = true; lastMatched = stack.length - 1; }
+          // Lazy continuation only if the line has content and does NOT
+          // start a new block that can interrupt the paragraph. A line
+          // that is blank after the markers it did match (e.g. a lone '>')
+          // closes the inner containers instead.
+          const rem = remStr(line);
+          const hasContent = /[^ \t\n]/.test(rem);
+          if (tip().t === 'para' && !blank && hasContent && !wouldInterrupt(line, tipInList())) { lazy = true; lastMatched = stack.length - 1; }
           break;
         }
         markerConsumed = true;
