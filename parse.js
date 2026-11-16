@@ -278,6 +278,28 @@ function parseLinkTail(str, j, bracket, refs) {
 
 // Process emphasis delimiters on a nodes array with its delims list.
 function processEmphasis(nodes, delims) {
+  // An outer * emphasis does not form when its content is [text ending in
+  // a space, an inner emphasis of a DIFFERENT delimiter length, text
+  // starting with a non-space] (e.g. *a **b**c* stays literal outside the
+  // strong, while *a *b*c* does form the outer em). The rule is specific
+  // to * (a _ or ~~ outer still forms) and only the first inner emphasis
+  // counts (a later one, e.g. **Gomphocarpus (<em>..</em>, syn. <em>..</em>)**,
+  // does not block). `use` is the outer's length.
+  const isBlocked = (children, use, ch) => {
+    if (ch !== '*') return false;
+    for (let k = 0; k < children.length; k++) {
+      const nd = children[k];
+      if (nd.t !== 'strong' && nd.t !== 'em') continue;
+      const innerLen = nd.t === 'strong' ? 2 : 1;
+      if (innerLen === use) return false;
+      const before = children[k - 1];
+      const after = children[k + 1];
+      if (!before || before.t !== 'text' || !/[ \t\n]$/.test(before.s)) return false;
+      if (!after || after.t !== 'text' || /^[ \t\n]/.test(after.s)) return false;
+      return true;
+    }
+    return false;
+  };
   let ci = 0;
   while (ci < delims.length) {
     const closer = delims[ci];
@@ -300,6 +322,7 @@ function processEmphasis(nodes, delims) {
     const ciNode = nodes.indexOf(closer);
     if (oiNode === -1 || ciNode === -1 || ciNode <= oiNode) { ci++; continue; }
     const children = nodes.slice(oiNode + 1, ciNode);
+    if (isBlocked(children, use, opener.ch)) { ci++; continue; }
     const newNode = { t: tag, c: children };
     opener.len -= use; closer.len -= use;
     const rep = [];
