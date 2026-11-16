@@ -961,10 +961,13 @@ function indentCols(L) {
   return cols;
 }
 
-// Split a table row into cells, honouring backslash escapes and code spans.
+// Split a table row into cells. Only a backslash-escaped pipe (\|) is a
+// literal pipe; a | inside a code span still splits the row (marked's
+// table splitter does not honour code spans -- a row whose split cell
+// count then differs from the delimiter row is not a table at all).
 function splitTableRow(line) {
   const cells = [];
-  let cur = '', i = 0, codeRun = 0;
+  let cur = '', i = 0;
   const n = line.length;
   let s = 0; while (s < n && line.charCodeAt(s) === 32) s++;
   const startsPipe = s < n && line.charCodeAt(s) === 124;
@@ -977,14 +980,7 @@ function splitTableRow(line) {
       if (line.charCodeAt(i + 1) === 124) { cur += '|'; i += 2; continue; }
       cur += line[i] + line[i + 1]; i += 2; continue;
     }
-    if (c === 96) {
-      let j = i; while (j < n && line.charCodeAt(j) === 96) j++;
-      const run = j - i;
-      if (codeRun === 0) codeRun = run;
-      else if (run === codeRun) codeRun = 0;
-      cur += line.slice(i, j); i = j; continue;
-    }
-    if (c === 124 && codeRun === 0) { cells.push(cur.trim()); cur = ''; i++; continue; }
+    if (c === 124) { cells.push(cur.trim()); cur = ''; i++; continue; }
     cur += line[i]; i++;
   }
   cells.push(cur.trim());
