@@ -1118,7 +1118,11 @@ function parseBlocks(src, refs) {
     return true;
   }
   function matchItem(line, blk) {
-    if (isBlankL(line)) return true; // blank line: item continues
+    if (isBlankL(line)) {
+      // an empty item (no children yet) is closed by a blank line
+      if (blk.children.length === 0) return false;
+      return true; // blank line: item continues
+    }
     const ind = indentCols(line);
     if (ind < blk.contentIndent) return false;
     advCols(line, blk.contentIndent);
@@ -1237,8 +1241,8 @@ function parseBlocks(src, refs) {
     if (ind >= 4) return null;
     advCols(line, ind);
     const c = curCh(line);
-    let type = null, start = 0, delim = '', markerLen = 0;
-    if (c === 45 || c === 43 || c === 42) { type = 'bullet'; markerLen = 1; }
+    let type = null, start = 0, delim = '', markerLen = 0, bullet = '';
+    if (c === 45 || c === 43 || c === 42) { type = 'bullet'; markerLen = 1; bullet = String.fromCharCode(c); }
     else if (c >= 48 && c <= 57) {
       let j = 0, num = 0;
       while (j < 9) {
@@ -1262,16 +1266,16 @@ function parseBlocks(src, refs) {
       spaces = line.col - col0;
       if (spaces >= 5) break;
     }
-    if (curCh(line) === 10) return { type, start, delim, contentIndent: ind + markerLen + 1, empty: true };
+    if (curCh(line) === 10) return { type, start, delim, bullet, contentIndent: ind + markerLen + 1, empty: true };
     if (spaces === 0) { restL(line, st); return null; }
     if (spaces >= 5) {
       restL(line, st);
       advCols(line, ind);
       for (let k = 0; k < markerLen; k++) advCh(line);
       advCols(line, 1);
-      return { type, start, delim, contentIndent: ind + markerLen + 1, empty: false };
+      return { type, start, delim, bullet, contentIndent: ind + markerLen + 1, empty: false };
     }
-    return { type, start, delim, contentIndent: ind + markerLen + spaces, empty: false };
+    return { type, start, delim, bullet, contentIndent: ind + markerLen + spaces, empty: false };
   }
 
   function addCodeLine(node, line) {
@@ -1397,14 +1401,16 @@ function parseBlocks(src, refs) {
       if (info) {
         let lst = tip();
         if (lst.t === 'list') {
-          if (lst.ordered === (info.type === 'ordered') && (!lst.ordered || lst.delim === info.delim)) {
+          const same = lst.ordered === (info.type === 'ordered')
+            && (!lst.ordered ? lst.bullet === info.bullet : lst.delim === info.delim);
+          if (same) {
             // same list
           } else {
             finalize(stack.pop());
-            lst = openBlock({ t: 'list', ordered: info.type === 'ordered', start: info.start, delim: info.delim, children: [] });
+            lst = openBlock({ t: 'list', ordered: info.type === 'ordered', start: info.start, delim: info.delim, bullet: info.bullet, children: [] });
           }
         } else {
-          lst = openBlock({ t: 'list', ordered: info.type === 'ordered', start: info.start, delim: info.delim, children: [] });
+          lst = openBlock({ t: 'list', ordered: info.type === 'ordered', start: info.start, delim: info.delim, bullet: info.bullet, children: [] });
         }
         const item = openBlock({ t: 'item', contentIndent: info.contentIndent, children: [] });
         return item;
@@ -1462,7 +1468,7 @@ function parseBlocks(src, refs) {
 
   // Peek: does this line start a block that can interrupt a paragraph?
   // Only inspects the line cursor (save/restore); never touches the tree.
-  function wouldInterrupt(line) {
+  function wouldInterrupt(line, inList) {
     if (isBlankL(line)) return false;
     const ind = indentCols(line);
     if (ind > 3) return false;
@@ -1492,7 +1498,20 @@ function parseBlocks(src, refs) {
     restL(line, st);
     const li = tryListItem(line);
     restL(line, st);
-    return !!li;
+    if (!li) return false;
+    // an empty item cannot interrupt a paragraph unless it is a sibling
+    // in an already-open list; an ordered list must start with 1 to
+    // interrupt a paragraph that is not itself inside a list
+    if (li.empty && !inList) return false;
+    if (li.type === 'ordered' && li.start !== 1 && !inList) return false;
+    return true;
+  }
+
+  // is the tip paragraph inside a list item (any ancestor is an item)?
+  function tipInList() {
+    let n = tip();
+    while (n) { if (n.t === 'item') return true; n = n._parent; }
+    return false;
   }
 
   // ---------- main line loop ----------
@@ -1515,7 +1534,7 @@ function parseBlocks(src, refs) {
         if (!matchQuote(line)) {
           // Lazy continuation only if the line does NOT start a new block
           // that can interrupt the paragraph.
-          if (tip().t === 'para' && !blank && !wouldInterrupt(line)) { lazy = true; lastMatched = stack.length - 1; }
+          if (tip().t === 'para' && !blank && !wouldInterrupt(line, tipInList())) { lazy = true; lastMatched = stack.length - 1; }
           break;
         }
         markerConsumed = true;
@@ -1525,7 +1544,7 @@ function parseBlocks(src, refs) {
       if (blk.t === 'item') {
         if (isBlankL(line)) blankHit = true;
         if (!matchItem(line, blk)) {
-          if (tip().t === 'para' && !blank && !wouldInterrupt(line)) { lazy = true; lastMatched = stack.length - 1; }
+          if (tip().t === 'para' && !blank && !wouldInterrupt(line, tipInList())) { lazy = true; lastMatched = stack.length - 1; }
           break;
         }
         markerConsumed = true;
@@ -1548,9 +1567,6 @@ function parseBlocks(src, refs) {
       if (isBlankL(line)) b._lastLineBlank = true;
       finalize(b);
     }
-    // a blank remainder (after container markers) counts as a blank line
-    // for looseness, even when the raw line was not blank (e.g. ">>")
-    if (isBlankL(line)) { for (let k = 1; k < stack.length; k++) stack[k]._lastLineBlank = true; }
     if (consumed) continue;
     // Phase 2
     const t = tip();
@@ -1576,7 +1592,7 @@ function parseBlocks(src, refs) {
         restL(line, st);
       }
       if (trySetext(t, line)) continue;
-      if (wouldInterrupt(line)) {
+      if (wouldInterrupt(line, tipInList())) {
         // close the paragraph first; the new block opens under its parent
         stack.pop();
         finalize(t);
