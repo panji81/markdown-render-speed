@@ -1496,18 +1496,39 @@ function parseBlocks(src, refs) {
     return { type, start, delim, bullet, contentIndent: ind + markerLen + spaces, empty: false };
   }
 
+  // The base column for tab expansion inside code in a container. This
+  // is the column the code block's content starts at, measured in the
+  // container-relative column space: list item indents accumulate, but a
+  // blockquote contributes only 2 (its content indent) and only the
+  // innermost blockquote counts -- containers outside the innermost
+  // blockquote do not add. With no blockquote ancestor, it is the sum of
+  // the list item contentIndents.
+  function containerTabBase() {
+    let lastQuote = -1;
+    for (let i = 0; i < stack.length; i++) if (stack[i].t === 'quote') lastQuote = i;
+    let base = 0;
+    if (lastQuote >= 0) {
+      base = 2;
+      for (let i = lastQuote + 1; i < stack.length; i++) if (stack[i].t === 'item') base += stack[i].contentIndent;
+    } else {
+      for (let i = 0; i < stack.length; i++) if (stack[i].t === 'item') base += stack[i].contentIndent;
+    }
+    return base;
+  }
+
   // Expand tabs in the leading whitespace of the remaining line content,
-  // using each tab's column in the original source line (tab stops every
-  // 4 columns). Only the leading whitespace is expanded; tabs later in
-  // the line are preserved verbatim. Advances the cursor past the leading
-  // whitespace and returns the expanded leading whitespace plus the rest
-  // of the line.
-  function expandLeadingWs(line) {
+  // using each tab's column in the effective (container-relative) column
+  // space, which starts at startCol (tab stops every 4 columns). Only the
+  // leading whitespace is expanded; tabs later in the line are preserved
+  // verbatim. Advances the cursor past the leading whitespace and returns
+  // the expanded leading whitespace plus the rest of the line.
+  function expandLeadingWs(line, startCol) {
     let out = '';
+    let col = startCol;
     while (true) {
       const c = curCh(line);
-      if (c === 32) { out += ' '; advCh(line); }
-      else if (c === 9) { const span = 4 - (line.col & 3); out += ' '.repeat(span); advCh(line); }
+      if (c === 32) { out += ' '; advCh(line); col++; }
+      else if (c === 9) { const span = 4 - (col & 3); out += ' '.repeat(span); advCh(line); col += span; }
       else break;
     }
     return out + remStr(line);
@@ -1520,9 +1541,10 @@ function parseBlocks(src, refs) {
     node._prevBlank = isBlankL(line);
     if (node.inContainer) {
       // Inside a list item / blockquote, the container indent was already
-      // consumed and leading tabs expand by their original column; the
-      // fence (or 4-space) indent is then removed from the expanded text.
-      const expanded = expandLeadingWs(line);
+      // consumed and leading tabs expand by their effective column (the
+      // innermost container's content indent); the fence (or 4-space)
+      // indent is then removed from the expanded text.
+      const expanded = expandLeadingWs(line, node.tabBase);
       const dedent = node.fenced ? node.fenceIndent : 4;
       let s = expanded, rem = dedent;
       while (rem > 0 && s.charCodeAt(0) === 32) { s = s.slice(1); rem--; }
@@ -1605,7 +1627,7 @@ function parseBlocks(src, refs) {
             const sp = info.search(/[ \t]/);
             if (sp >= 0) info = info.slice(0, sp);
             info = unescapeStr(info);
-            const node = { t: 'code', fenced: true, fenceChar: c, fenceLen: j, fenceIndent: ind, info, content: '', inContainer: stack.some(b => b.t === 'item' || b.t === 'quote') };
+            const node = { t: 'code', fenced: true, fenceChar: c, fenceLen: j, fenceIndent: ind, info, content: '', inContainer: stack.some(b => b.t === 'item' || b.t === 'quote'), tabBase: containerTabBase() };
             closeListIfNeeded();
             openBlock(node);
             return node;
@@ -1668,7 +1690,7 @@ function parseBlocks(src, refs) {
     }
     // indented code (not when interrupting a paragraph)
     if (!interruptPara && ind >= 4) {
-      const node = { t: 'code', fenced: false, content: '', inContainer: stack.some(b => b.t === 'item' || b.t === 'quote') };
+      const node = { t: 'code', fenced: false, content: '', inContainer: stack.some(b => b.t === 'item' || b.t === 'quote'), tabBase: containerTabBase() };
       closeListIfNeeded();
       openBlock(node);
       addCodeLine(node, line);
