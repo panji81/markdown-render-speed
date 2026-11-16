@@ -303,11 +303,11 @@ function processEmphasis(nodes, delims) {
   let ci = 0;
   while (ci < delims.length) {
     const closer = delims[ci];
-    if (!closer.canClose || closer.len === 0) { ci++; continue; }
+    if (!closer.canClose || closer.len === 0 || closer.dead) { ci++; continue; }
     let oi = -1;
     for (let j = ci - 1; j >= 0; j--) {
       const opener = delims[j];
-      if (opener.ch !== closer.ch || !opener.canOpen || opener.len === 0) continue;
+      if (opener.ch !== closer.ch || !opener.canOpen || opener.len === 0 || opener.dead) continue;
       // a delimiter absorbed inside an already-formed emphasis node is
       // no longer a direct child here and cannot open across its boundary
       if (nodes.indexOf(opener) === -1) continue;
@@ -322,7 +322,12 @@ function processEmphasis(nodes, delims) {
     const ciNode = nodes.indexOf(closer);
     if (oiNode === -1 || ciNode === -1 || ciNode <= oiNode) { ci++; continue; }
     const children = nodes.slice(oiNode + 1, ciNode);
-    if (isBlocked(children, use, opener.ch)) { ci++; continue; }
+    if (isBlocked(children, use, opener.ch)) {
+      // the pair stays literal, but neither delimiter may match another
+      // one (otherwise the outer closer would grab the inner opener)
+      opener.dead = true; closer.dead = true;
+      ci++; continue;
+    }
     const newNode = { t: tag, c: children };
     opener.len -= use; closer.len -= use;
     const rep = [];
