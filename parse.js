@@ -134,7 +134,9 @@ function unescapeStr(s) {
 }
 
 function normalizeLabel(s) {
-  return unescapeStr(s).replace(/\s+/g, ' ').trim().toLowerCase();
+  // labels match on raw text (backslashes NOT unescaped), with whitespace
+  // collapsed and Unicode case folded (ß/ẞ fold to ss)
+  return s.replace(/\s+/g, ' ').trim().toLowerCase().replace(/ß/g, 'ss');
 }
 
 // ---------- inline parsing ----------
@@ -165,15 +167,15 @@ function isDomainChar(c) {
 }
 
 // Parse a link label starting at str[j] === '['. Returns {label, end} or null.
-// Label: balanced brackets, backslash escapes, max 999 chars.
+// Label: no nested brackets (marked rejects them), backslash escapes, max 999 chars.
 function parseLabel(str, j) {
   const n = str.length;
-  let depth = 0, k = j;
+  let k = j + 1;
   while (k < n) {
     const c = str.charCodeAt(k);
     if (c === 92 && k + 1 < n && isAsciiPunct(str.charCodeAt(k + 1))) { k += 2; continue; }
-    if (c === 91) { depth++; if (depth > 1 && k - j > 999) return null; k++; continue; }
-    if (c === 93) { depth--; if (depth === 0) return { label: str.slice(j + 1, k), end: k + 1 }; k++; continue; }
+    if (c === 91) return null; // nested '[' not allowed in a label
+    if (c === 93) return { label: str.slice(j + 1, k), end: k + 1 };
     k++;
     if (k - j > 1000) return null;
   }
@@ -255,7 +257,7 @@ function parseLinkTail(str, j, bracket, refs) {
   if (k < n && str.charCodeAt(k) === 40) { // (...
     return parseLinkDestTitle(str, k + 1);
   }
-  while (k < n && isSpace(str.charCodeAt(k))) k++;
+  // full reference: '[' must also follow ']' immediately (no space/newline)
   if (k < n && str.charCodeAt(k) === 91) { // [label]
     const lab = parseLabel(str, k);
     if (lab) {
