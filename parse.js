@@ -1041,12 +1041,13 @@ function parseBlocks(src, refs) {
       node.content = node.lines.join('\n');
       if (node.htmlType >= 1 && node.htmlType <= 5) {
         // ends at a line containing the end tag: that line's newline is kept
-        if (!(node._eof && !trailingNL)) node.content += '\n';
+        // unless the block is followed by a blank line
+        if (!node._noTrailNL && !(node._eof && !trailingNL)) node.content += '\n';
       } else {
         // ends at a blank line (or EOF): no trailing newline except at EOF
         if (node._eof && trailingNL) node.content += '\n';
       }
-      delete node.lines; delete node._eof;
+      delete node.lines; delete node._eof; delete node._complete; delete node._noTrailNL;
       return;
     }
     if (node.t === 'para') {
@@ -1145,12 +1146,13 @@ function parseBlocks(src, refs) {
       return indentCols(line) >= 4 ? 1 : 0;
     }
     if (blk.t === 'html') {
+      if (blk._complete) return 0;
       const r = remStr(line);
-      if (blk.htmlType === 1) { if (r.toLowerCase().indexOf('</' + blk.htmlTag) >= 0) return 3; return 1; }
-      if (blk.htmlType === 2) { if (r.indexOf('-->') >= 0) return 3; return 1; }
-      if (blk.htmlType === 3) { if (r.indexOf('?>') >= 0) return 3; return 1; }
-      if (blk.htmlType === 4) { if (r.indexOf('>') >= 0) return 3; return 1; }
-      if (blk.htmlType === 5) { if (r.indexOf(']]>') >= 0) return 3; return 1; }
+      if (blk.htmlType === 1) { if (r.toLowerCase().indexOf('</' + blk.htmlTag) >= 0) { blk._complete = true; return 1; } return 1; }
+      if (blk.htmlType === 2) { if (r.indexOf('-->') >= 0) { blk._complete = true; return 1; } return 1; }
+      if (blk.htmlType === 3) { if (r.indexOf('?>') >= 0) { blk._complete = true; return 1; } return 1; }
+      if (blk.htmlType === 4) { if (r.indexOf('>') >= 0) { blk._complete = true; return 1; } return 1; }
+      if (blk.htmlType === 5) { if (r.indexOf(']]>') >= 0) { blk._complete = true; return 1; } return 1; }
       return blank ? 0 : 1;
     }
     return 0;
@@ -1366,11 +1368,8 @@ function parseBlocks(src, refs) {
         // HTML block content keeps the line's leading spaces.
         restL(line, st);
         addHtmlLine(node, line, isLast);
-        if (hs.type >= 1 && hs.type <= 5 && htmlEndMet(node, r)) {
-          finalize(node);
-        } else {
-          stack.push(node);
-        }
+        if (hs.type >= 1 && hs.type <= 5 && htmlEndMet(node, r)) node._complete = true;
+        stack.push(node);
         return node;
       }
       restL(line, st);
@@ -1534,7 +1533,11 @@ function parseBlocks(src, refs) {
       break;
     }
     // close unmatched blocks
-    while (stack.length - 1 > lastMatched) finalize(stack.pop());
+    while (stack.length - 1 > lastMatched) {
+      const b = stack.pop();
+      if (b.t === 'html' && blank) b._noTrailNL = true;
+      finalize(b);
+    }
     if (consumed) continue;
     // Phase 2
     const t = tip();
