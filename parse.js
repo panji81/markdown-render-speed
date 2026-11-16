@@ -278,7 +278,7 @@ function processEmphasis(nodes, delims) {
     const closer = delims[ci];
     if (!closer.canClose || closer.len === 0) { ci++; continue; }
     let oi = -1;
-    for (let j = ci - 1; j > bottom[closer.ch]; j--) {
+    for (let j = ci - 1; j >= 0 && j >= bottom[closer.ch]; j--) {
       const opener = delims[j];
       if (opener.ch !== closer.ch || !opener.canOpen || opener.len === 0) continue;
       if ((opener.canClose || closer.canOpen) && ((opener.len + closer.len) % 3 === 0) && (opener.len % 3 !== 0 || closer.len % 3 !== 0)) continue;
