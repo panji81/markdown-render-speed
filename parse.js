@@ -877,8 +877,9 @@ function parseRefdefs(text, refs) {
       dest = d; k = m;
     }
     let title = null;
+    const kDest = k;
     let k2 = skipWs1(text, k);
-    if (k2 < n) {
+    if (k2 < n && k2 > k) {
       const tc = text.charCodeAt(k2);
       if (tc === 34 || tc === 39 || tc === 40) {
         const close = tc === 40 ? 41 : tc;
@@ -896,7 +897,15 @@ function parseRefdefs(text, refs) {
     // must end the line here (only spaces/tabs, then \n or end)
     let k3 = k;
     while (k3 < n && (text.charCodeAt(k3) === 32 || text.charCodeAt(k3) === 9)) k3++;
-    if (k3 < n && text.charCodeAt(k3) !== 10) break;
+    if (k3 < n && text.charCodeAt(k3) !== 10) {
+      // a bad title must not kill the refdef: retry without the title
+      if (title !== null) {
+        k3 = kDest;
+        while (k3 < n && (text.charCodeAt(k3) === 32 || text.charCodeAt(k3) === 9)) k3++;
+        if (k3 < n && text.charCodeAt(k3) !== 10) break;
+        title = null; k = kDest;
+      } else break;
+    }
     if (k3 < n) k3++;
     const key = normalizeLabel(lab.label);
     if (key && !refs.has(key)) refs.set(key, { dest, title });
@@ -1030,7 +1039,13 @@ function parseBlocks(src, refs) {
   function finalize(node) {
     if (node.t === 'html') {
       node.content = node.lines.join('\n');
-      if (node._eof && trailingNL) node.content += '\n';
+      if (node.htmlType >= 1 && node.htmlType <= 5) {
+        // ends at a line containing the end tag: that line's newline is kept
+        if (!(node._eof && !trailingNL)) node.content += '\n';
+      } else {
+        // ends at a blank line (or EOF): no trailing newline except at EOF
+        if (node._eof && trailingNL) node.content += '\n';
+      }
       delete node.lines; delete node._eof;
       return;
     }
@@ -1266,10 +1281,8 @@ function parseBlocks(src, refs) {
     if (isLast) node._eof = true;
   }
   function addParaLine(node, line) {
-    const ind = indentCols(line);
-    // Up to 3 spaces of indentation are stripped; 4+ spaces are part of
-    // the paragraph content (a code block cannot interrupt a paragraph).
-    if (ind <= 3) advCols(line, ind);
+    // Paragraph content keeps the line's leading spaces (up to 3); the
+    // container indent was already consumed by phase-1 matching.
     node.lines.push(remStr(line));
   }
 
@@ -1425,7 +1438,17 @@ function parseBlocks(src, refs) {
     while (curCh(line) === c) { advCh(line); j++; }
     while (curCh(line) === 32 || curCh(line) === 9) advCh(line);
     if (curCh(line) !== 10 || j === 0) { restL(line, st); return false; }
-    const content = t.lines.join('\n').replace(/[ \t]+$/g, '').replace(/[ \t]+\n/g, '\n');
+    // strip any link reference definitions first; if nothing is left the
+    // paragraph is gone and this line is not a setext underline
+    let content = t.lines.join('\n');
+    const rest = parseRefdefs(content, refs);
+    if (rest !== null) content = rest;
+    content = content.replace(/^[ \t]+/, '').replace(/[ \t]+$/g, '').replace(/[ \t]+\n/g, '\n');
+    if (content.replace(/^[ \t\n]+/, '') === '') {
+      // nothing left but refdefs: this line is not a setext underline,
+      // it is a plain paragraph line; leave the paragraph in place
+      restL(line, st); return false;
+    }
     t.t = 'heading'; t.level = c === 61 ? 1 : 2; t.content = content;
     delete t.lines;
     stack.pop();
@@ -1461,6 +1484,7 @@ function parseBlocks(src, refs) {
     }
     if (htmlStart(remStr(line))) { restL(line, st); return true; }
     if (isThematicBreak(line)) { restL(line, st); return true; }
+    if (curCh(line) === 62) { restL(line, st); return true; } // blockquote
     restL(line, st);
     const li = tryListItem(line);
     restL(line, st);
