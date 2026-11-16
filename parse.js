@@ -107,13 +107,13 @@ function cleanUrl(url) {
   let need = false;
   for (let i = 0; i < url.length; i++) {
     const c = url.charCodeAt(i);
-    if (c === 32 || c === 34 || c === 60 || c === 62 || c === 92 || c < 32 || c >= 0x80) { need = true; break; }
+    if (c === 32 || c === 34 || c === 60 || c === 62 || c === 92 || c === 96 || c < 32 || c >= 0x80) { need = true; break; }
   }
   if (!need) return url;
   let out = '';
   for (let i = 0; i < url.length; i++) {
     const c = url.charCodeAt(i);
-    if (c === 32 || c === 34 || c === 60 || c === 62 || c === 92 || c < 32 || c >= 0x80) {
+    if (c === 32 || c === 34 || c === 60 || c === 62 || c === 92 || c === 96 || c < 32 || c >= 0x80) {
       const ch = url[i];
       const bytes = new TextEncoder().encode(ch);
       for (const b of bytes) out += '%' + b.toString(16).toUpperCase().padStart(2, '0');
@@ -441,38 +441,35 @@ function parseHtmlTag(str, i) {
 }
 
 // ---------- extended autolinks (GFM) ----------
-// Parse a www. autolink starting at str[i] ('w'). Returns {end, text} or null.
-function parseWwwAutolink(str, i) {
+// Parse a URL host (domain labels + TLD) starting at str[j], plus an
+// optional path. Returns the end index, or -1 if the host is invalid.
+// `prefix` are the labels already known before j (e.g. ['www']).
+function parseHostPath(str, j, prefix) {
   const n = str.length;
-  let j = i + 4; // past 'www.'
-  // domain: labels separated by '.', ending in a TLD of 2+ letters
-  let labels = 0, lastLabelStart = j, lastLabelIsTld = false, domainEnd = -1;
   let k = j;
   while (k < n) {
     const c = str.charCodeAt(k);
     if (isDomainChar(c) || c === 46) { k++; continue; }
     break;
   }
-  // validate the domain substring str[j..k)
+  while (k > j && str.charCodeAt(k - 1) === 46) k--;
   const dom = str.slice(j, k);
-  if (!dom) return null;
+  if (!dom) return -1;
   const parts = dom.split('.');
-  // the first label starts right after 'www.'; the whole domain is 'www.' + dom
-  const allParts = ['www', ...parts];
+  const allParts = [...prefix, ...parts];
   for (let p = 0; p < allParts.length; p++) {
     const lab = allParts[p];
-    if (!lab) return null;
-    if (lab[0] === '-' || lab[lab.length - 1] === '-') return null;
-    for (let q = 0; q < lab.length; q++) if (!isDomainChar(lab.charCodeAt(q))) return null;
+    if (!lab) return -1;
+    if (lab[0] === '-' || lab[lab.length - 1] === '-') return -1;
+    for (let q = 0; q < lab.length; q++) if (!isDomainChar(lab.charCodeAt(q))) return -1;
   }
   const tld = allParts[allParts.length - 1];
-  if (tld.length < 2) return null;
+  if (tld.length < 2) return -1;
   for (let q = 0; q < tld.length; q++) {
     const c = tld.charCodeAt(q);
-    if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122))) return null;
+    if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122))) return -1;
   }
-  domainEnd = k;
-  // optional path: starts with '/'
+  const domainEnd = k;
   let end = domainEnd;
   if (end < n && str.charCodeAt(end) === 47) {
     let p = end;
@@ -486,18 +483,15 @@ function parseWwwAutolink(str, i) {
         if (m > p + 1 && m < n && str.charCodeAt(m) === 59) break;
       }
       if (c === 40) depth++;
-      else if (c === 41) { if (depth === 0) break; depth--; }
+      else if (c === 41) depth--;
       p++;
     }
     end = p;
-    // strip trailing punctuation
     while (end > domainEnd) {
       const c = str.charCodeAt(end - 1);
       if (c === 46 || c === 44 || c === 59 || c === 58 || c === 33 || c === 63 || c === 42 || c === 95 || c === 126 || c === 39 || c === 34) end--;
-      else if (c === 41 && depth === 0) end--; // unbalanced ) — depth is 0 here only if no open parens; recompute below
       else break;
     }
-    // fix unbalanced trailing parens: count parens in the path
     let d2 = 0;
     for (let q = domainEnd; q < end; q++) {
       if (str.charCodeAt(q) === 40) d2++;
@@ -505,7 +499,36 @@ function parseWwwAutolink(str, i) {
     }
     while (d2 < 0 && end > domainEnd && str.charCodeAt(end - 1) === 41) { end--; d2++; }
   }
-  if (end === i + 4) return null;
+  return end;
+}
+
+// Parse a www. autolink starting at str[i] ('w'). Returns {end, text} or null.
+function parseWwwAutolink(str, i) {
+  const end = parseHostPath(str, i + 4, ['www']);
+  if (end === -1 || end === i + 4) return null;
+  return { end, text: str.slice(i, end) };
+}
+
+// Parse a scheme autolink (http://, https://, ftp://, ...) starting at
+// str[i] (a letter). Returns {end, text} or null.
+function parseSchemeAutolink(str, i) {
+  const n = str.length;
+  let j = i;
+  if (j >= n) return null;
+  const c0 = str.charCodeAt(j);
+  if (!((c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122))) return null;
+  j++;
+  let len = 1;
+  while (j < n && len < 32) {
+    const c = str.charCodeAt(j);
+    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 43 || c === 45 || c === 46) { j++; len++; continue; }
+    break;
+  }
+  if (len < 2) return null;
+  if (j + 2 >= n || str.charCodeAt(j) !== 58 || str.charCodeAt(j + 1) !== 47 || str.charCodeAt(j + 2) !== 47) return null;
+  const hostStart = j + 3;
+  const end = parseHostPath(str, hostStart, []);
+  if (end === -1 || end <= hostStart) return null;
   return { end, text: str.slice(i, end) };
 }
 
@@ -681,6 +704,17 @@ export function parseInline(str, refs) {
         buf += '\n';
       }
       i++; continue;
+    }
+    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) { // possible scheme autolink
+      const prev = i === 0 ? 0 : str.charCodeAt(i - 1);
+      const prevAlnum = (prev >= 65 && prev <= 90) || (prev >= 97 && prev <= 122) || (prev >= 48 && prev <= 57);
+      if (!prevAlnum) {
+        const s = parseSchemeAutolink(str, i);
+        if (s) {
+          flush(); nodes.push({ t: 'link', href: s.text, title: null, c: [{ t: 'text', s: s.text }] });
+          i = s.end; continue;
+        }
+      }
     }
     if (c === 119 || c === 87) { // w/W — possible www. autolink
       if ((i === 0 || !((str.charCodeAt(i - 1) >= 65 && str.charCodeAt(i - 1) <= 90) || (str.charCodeAt(i - 1) >= 97 && str.charCodeAt(i - 1) <= 122) || (str.charCodeAt(i - 1) >= 48 && str.charCodeAt(i - 1) <= 57))) &&
@@ -1094,6 +1128,10 @@ function parseBlocks(src, refs) {
       let c = node.content;
       while (c.length >= 2 && c.endsWith('\n\n')) c = c.slice(0, -1);
       node.content = c;
+    } else if (node.t === 'code' && node.fenced) {
+      // a fenced block's content is its lines joined by \n, with a trailing
+      // \n only if the last line is non-blank
+      if (node.content.endsWith('\n\n')) node.content = node.content.slice(0, -1);
     }
   }
 
@@ -1519,7 +1557,8 @@ function parseBlocks(src, refs) {
     const isLast = li === lines.length - 1;
     const line = LC(lines[li]);
     const blank = isBlankL(line);
-    if (blank) { for (let k = 1; k < stack.length; k++) stack[k]._lastLineBlank = true; }
+    // a blank line inside a code block is code content, not a separator
+    if (blank && tip().t !== 'code') { for (let k = 1; k < stack.length; k++) stack[k]._lastLineBlank = true; }
     // Phase 1: match open containers
     let lastMatched = 0;
     let consumed = false;
