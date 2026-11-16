@@ -102,18 +102,19 @@ function escAttr(s, out) {
 }
 
 // Percent-encode a URL the way marked's cleanUrl does: space, ", <, >,
-// control chars and non-ASCII become UTF-8 percent sequences.
+// [, ], {, }, |, ^, backslash, backtick, control chars and non-ASCII
+// become UTF-8 percent sequences.
 function cleanUrl(url) {
   let need = false;
   for (let i = 0; i < url.length; i++) {
     const c = url.charCodeAt(i);
-    if (c === 32 || c === 34 || c === 60 || c === 62 || c === 92 || c === 96 || c < 32 || c >= 0x80) { need = true; break; }
+    if (c === 32 || c === 34 || c === 60 || c === 62 || c === 91 || c === 92 || c === 93 || c === 94 || c === 96 || c === 123 || c === 124 || c === 125 || c < 32 || c >= 0x80) { need = true; break; }
   }
   if (!need) return url;
   let out = '';
   for (let i = 0; i < url.length; i++) {
     const c = url.charCodeAt(i);
-    if (c === 32 || c === 34 || c === 60 || c === 62 || c === 92 || c === 96 || c < 32 || c >= 0x80) {
+    if (c === 32 || c === 34 || c === 60 || c === 62 || c === 91 || c === 92 || c === 93 || c === 94 || c === 96 || c === 123 || c === 124 || c === 125 || c < 32 || c >= 0x80) {
       const ch = url[i];
       const bytes = new TextEncoder().encode(ch);
       for (const b of bytes) out += '%' + b.toString(16).toUpperCase().padStart(2, '0');
@@ -530,6 +531,9 @@ function parseHostPath(str, j, prefix) {
     while (p < n) {
       const c = str.charCodeAt(p);
       if (c === 32 || c === 10 || c === 60) break;
+      // a ] followed by ( is the close of a link's text: the autolink
+      // must not swallow it, or the enclosing [text](url) can never form
+      if (c === 93 && p + 1 < n && str.charCodeAt(p + 1) === 40) break;
       if (c === 38) { // &entity; terminates the path
         let m = p + 1;
         while (m < n && ((str.charCodeAt(m) >= 65 && str.charCodeAt(m) <= 90) || (str.charCodeAt(m) >= 97 && str.charCodeAt(m) <= 122) || (str.charCodeAt(m) >= 48 && str.charCodeAt(m) <= 57))) m++;
@@ -1283,8 +1287,9 @@ function parseBlocks(src, refs) {
       node.content = c;
     } else if (node.t === 'code' && node.fenced) {
       // a fenced block's content is its lines joined by \n, with a trailing
-      // \n only if the last line is non-blank
-      if (node.content.endsWith('\n\n')) node.content = node.content.slice(0, -1);
+      // \n only if the last line is non-blank (a single blank line, or a
+      // blank last line, loses its trailing \n)
+      if (node.content === '\n' || node.content.endsWith('\n\n')) node.content = node.content.slice(0, -1);
     }
   }
 
