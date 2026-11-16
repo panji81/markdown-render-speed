@@ -421,6 +421,8 @@ function parseHtmlTag(str, i) {
   let j = i + 1;
   while (j < n && ((str.charCodeAt(j) >= 65 && str.charCodeAt(j) <= 90) || (str.charCodeAt(j) >= 97 && str.charCodeAt(j) <= 122) || (str.charCodeAt(j) >= 48 && str.charCodeAt(j) <= 57) || str.charCodeAt(j) === 45)) j++;
   while (true) {
+    // an attribute must be preceded by whitespace; '>' or '/>' may follow directly
+    const beforeWs = j;
     while (j < n && isSpace(str.charCodeAt(j))) j++;
     if (j >= n) return null;
     const c = str.charCodeAt(j);
@@ -429,6 +431,7 @@ function parseHtmlTag(str, i) {
       if (j + 1 < n && str.charCodeAt(j + 1) === 62) return { end: j + 2 };
       return null;
     }
+    if (j === beforeWs) return null; // no whitespace before attribute: not a tag
     // attribute name
     if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 58)) return null;
     j++;
@@ -559,6 +562,9 @@ function parseEmailAutolink(str, atIdx) {
   let ls = atIdx;
   while (ls > 0 && isEmailLocalChar(str.charCodeAt(ls - 1))) ls--;
   if (ls === atIdx) return null;
+  // a backslash right before the local part means its first char is
+  // escaped (foo\+@...), so this is not a standalone email
+  if (ls > 0 && str.charCodeAt(ls - 1) === 92) return null;
   const local = str.slice(ls, atIdx);
   if (local[0] === '.' || local[local.length - 1] === '.') return null;
   // domain after @
