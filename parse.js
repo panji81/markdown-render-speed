@@ -348,29 +348,49 @@ function renderInline(nodes, out) {
   }
 }
 
-// Strip tags from rendered HTML (for image alt text).
-function stripTags(html) {
-  let out = '';
-  let i = 0;
-  while (i < html.length) {
-    if (html.charCodeAt(i) === 60) {
-      const j = html.indexOf('>', i);
-      if (j === -1) { out += html.slice(i); break; }
-      i = j + 1;
-    } else { out += html[i]; i++; }
+// Classify an inline HTML tag string: 'a-open' for <a ...> (not
+// self-closing), 'a-close' for </a>, else null.
+function aTagKind(tagStr) {
+  let j = 1, closing = false;
+  if (tagStr.charCodeAt(1) === 47) { closing = true; j = 2; }
+  let k = j;
+  while (k < tagStr.length) {
+    const c = tagStr.charCodeAt(k);
+    if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 45) k++;
+    else break;
   }
-  return out;
+  if (k === j) return null;
+  if (tagStr.slice(j, k).toLowerCase() !== 'a') return null;
+  if (closing) return 'a-close';
+  if (tagStr.length >= 2 && tagStr.charCodeAt(tagStr.length - 2) === 47 && tagStr.charCodeAt(tagStr.length - 1) === 62) return null; // <a ... />
+  return 'a-open';
+}
+
+// Replace GFM extended-autolink nodes (email/www/scheme) inside a link's
+// text with their plain text: extended autolinks never form inside a link
+// (angle autolinks <...> do form, so they are left alone).
+function stripGfmAutolinks(nodes) {
+  for (let k = 0; k < nodes.length; k++) {
+    const nd = nodes[k];
+    if (nd.t === 'link' && nd.gfm) {
+      nodes[k] = { t: 'text', s: nd.c.length === 1 && nd.c[0].t === 'text' ? nd.c[0].s : '' };
+    } else if (nd.t === 'em' || nd.t === 'strong' || nd.t === 'del') {
+      stripGfmAutolinks(nd.c);
+    }
+  }
 }
 
 // Plain-text content of inline nodes (for image alt text): an image
-// contributes its own alt, a link/emphasis contributes its children.
+// contributes its own alt, a link/emphasis contributes its children, and
+// raw HTML tags contribute their literal text (marked keeps e.g. <b> in
+// alt as "&lt;b&gt;"); an unmatched delimiter contributes its chars.
 function plainText(nodes) {
   let out = '';
   for (const nd of nodes) {
-    if (nd.t === 'text' || nd.t === 'code' || nd.t === 'raw') out += nd.s;
+    if (nd.t === 'text' || nd.t === 'code' || nd.t === 'raw' || nd.t === 'html') out += nd.s;
+    else if (nd.t === 'delim') out += nd.ch.repeat(nd.len);
     else if (nd.t === 'image') out += nd.alt;
     else if (nd.t === 'link' || nd.t === 'em' || nd.t === 'strong' || nd.t === 'del') out += plainText(nd.c);
-    else if (nd.t === 'html') out += stripTags(nd.s);
     else if (nd.t === 'br') out += '\n';
   }
   return out;
@@ -655,7 +675,14 @@ function parseEmailAutolink(str, atIdx) {
 }
 
 // ---------- the inline scanner ----------
-export function parseInline(str, refs) {
+// `istate` is the document-level inline state, shared across every
+// parseInline call of one parse(): { inLink } — true once an unclosed
+// <a> tag has been seen (an <a> opens a link context that suppresses
+// GFM extended autolinks until a </a> closes it). It is also saved and
+// restored around each link/image bracket, so a tag inside link text
+// cannot leak out of the link.
+export function parseInline(str, refs, istate) {
+  if (!istate) istate = { inLink: false };
   const nodes = [];
   const delims = [];
   const brackets = [];
@@ -718,7 +745,7 @@ export function parseInline(str, refs) {
       flush();
       const tn = { t: 'text', s: '[' };
       nodes.push(tn);
-      brackets.push({ node: tn, bang: null, strIdx: i, closeIdx: -1, image: false, active: true });
+      brackets.push({ node: tn, bang: null, strIdx: i, closeIdx: -1, image: false, active: true, inLink: istate.inLink });
       i++; continue;
     }
     if (c === 33 && i + 1 < n && str.charCodeAt(i + 1) === 91) { // ![
@@ -727,7 +754,7 @@ export function parseInline(str, refs) {
       nodes.push(bang);
       const tn = { t: 'text', s: '[' };
       nodes.push(tn);
-      brackets.push({ node: tn, bang, strIdx: i + 1, closeIdx: -1, image: true, active: true });
+      brackets.push({ node: tn, bang, strIdx: i + 1, closeIdx: -1, image: true, active: true, inLink: istate.inLink });
       i += 2; continue;
     }
     if (c === 93) { // ]
@@ -752,6 +779,10 @@ export function parseInline(str, refs) {
         const childDelims = delims.filter(d => childSet.has(d));
         for (const d of childDelims) { const gi = delims.indexOf(d); if (gi !== -1) delims.splice(gi, 1); }
         processEmphasis(childNodes, childDelims);
+        // GFM extended autolinks never form inside a link's text; a tag
+        // inside the link text must not leak its link context out either
+        if (!br.image) stripGfmAutolinks(childNodes);
+        istate.inLink = br.inLink;
         let linkNode;
         if (br.image) {
           linkNode = { t: 'image', href: link.href, title: link.title, alt: plainText(childNodes) };
@@ -788,7 +819,17 @@ export function parseInline(str, refs) {
       }
       if (matched) continue;
       const tag = parseHtmlTag(str, i);
-      if (tag) { flush(); nodes.push({ t: 'html', s: str.slice(i, tag.end) }); i = tag.end; continue; }
+      if (tag) {
+        flush();
+        const tagStr = str.slice(i, tag.end);
+        nodes.push({ t: 'html', s: tagStr });
+        // an unclosed <a> opens a link context (suppresses GFM autolinks
+        // until a </a> closes it); a self-closing <a/> does not
+        const kind = aTagKind(tagStr);
+        if (kind === 'a-open') istate.inLink = true;
+        else if (kind === 'a-close') istate.inLink = false;
+        i = tag.end; continue;
+      }
       buf += '<'; i++; continue;
     }
     if (c === 38) { // & entity
@@ -814,20 +855,20 @@ export function parseInline(str, refs) {
     if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122)) { // possible scheme autolink
       const prev = i === 0 ? 0 : str.charCodeAt(i - 1);
       const prevAlnum = (prev >= 65 && prev <= 90) || (prev >= 97 && prev <= 122) || (prev >= 48 && prev <= 57);
-      if (!prevAlnum) {
+      if (!prevAlnum && !istate.inLink) {
         const s = parseSchemeAutolink(str, i);
         if (s) {
-          flush(); nodes.push({ t: 'link', href: s.text, title: null, c: [{ t: 'text', s: s.text }] });
+          flush(); nodes.push({ t: 'link', href: s.text, title: null, gfm: true, c: [{ t: 'text', s: s.text }] });
           i = s.end; continue;
         }
       }
     }
     if (c === 119) { // w — possible www. autolink (lowercase only)
-      if ((i === 0 || !((str.charCodeAt(i - 1) >= 65 && str.charCodeAt(i - 1) <= 90) || (str.charCodeAt(i - 1) >= 97 && str.charCodeAt(i - 1) <= 122) || (str.charCodeAt(i - 1) >= 48 && str.charCodeAt(i - 1) <= 57))) &&
+      if (!istate.inLink && (i === 0 || !((str.charCodeAt(i - 1) >= 65 && str.charCodeAt(i - 1) <= 90) || (str.charCodeAt(i - 1) >= 97 && str.charCodeAt(i - 1) <= 122) || (str.charCodeAt(i - 1) >= 48 && str.charCodeAt(i - 1) <= 57))) &&
         str.slice(i, i + 4) === 'www.') {
         const w = parseWwwAutolink(str, i);
         if (w) {
-          flush(); nodes.push({ t: 'link', href: 'http://' + w.text, title: null, c: [{ t: 'text', s: w.text }] });
+          flush(); nodes.push({ t: 'link', href: 'http://' + w.text, title: null, gfm: true, c: [{ t: 'text', s: w.text }] });
           i = w.end; continue;
         }
       }
@@ -835,14 +876,14 @@ export function parseInline(str, refs) {
     }
     if (c === 64) { // @ — possible extended email autolink
       const em = parseEmailAutolink(str, i);
-      if (em && em.start < i) {
+      if (!istate.inLink && em && em.start < i) {
         // local part is the tail of buf
         const localLen = i - em.start;
         if (buf.length >= localLen && buf.slice(buf.length - localLen) === str.slice(em.start, i)) {
           buf = buf.slice(0, buf.length - localLen);
           flush();
           const text = str.slice(em.start, em.end);
-          nodes.push({ t: 'link', href: 'mailto:' + text, title: null, c: [{ t: 'text', s: text }] });
+          nodes.push({ t: 'link', href: 'mailto:' + text, title: null, gfm: true, c: [{ t: 'text', s: text }] });
           i = em.end; continue;
         }
       }
@@ -855,8 +896,8 @@ export function parseInline(str, refs) {
   return nodes;
 }
 
-export function inlineToHtml(str, refs, out) {
-  renderInline(parseInline(str, refs), out);
+export function inlineToHtml(str, refs, out, istate) {
+  renderInline(parseInline(str, refs, istate), out);
 }
 
 // ---------- block parsing ----------
@@ -1067,20 +1108,20 @@ function parseRefdefs(text, refs) {
 }
 
 // ---------- rendering ----------
-function renderBlocks(node, out, refs, inTightList) {
+function renderBlocks(node, out, refs, inTightList, istate) {
   switch (node.t) {
-    case 'doc': for (const c of node.children) renderBlocks(c, out, refs, false); break;
+    case 'doc': for (const c of node.children) renderBlocks(c, out, refs, false, istate); break;
     case 'para': {
       let content = node.content;
       // task list checkbox on the first paragraph of an item
       out.push('<p>');
-      inlineToHtml(content, refs, out);
+      inlineToHtml(content, refs, out, istate);
       out.push('</p>\n');
       break;
     }
     case 'heading': {
       out.push('<h' + node.level + '>');
-      inlineToHtml(node.content, refs, out);
+      inlineToHtml(node.content, refs, out, istate);
       out.push('</h' + node.level + '>\n');
       break;
     }
@@ -1096,7 +1137,7 @@ function renderBlocks(node, out, refs, inTightList) {
     case 'hr': out.push('<hr>\n'); break;
     case 'quote': {
       out.push('<blockquote>\n');
-      for (const c of node.children) renderBlocks(c, out, refs, false);
+      for (const c of node.children) renderBlocks(c, out, refs, false, istate);
       out.push('</blockquote>\n');
       break;
     }
@@ -1104,7 +1145,7 @@ function renderBlocks(node, out, refs, inTightList) {
       out.push(node.ordered ? '<ol' : '<ul');
       if (node.ordered && node.start !== 1) out.push(' start="' + node.start + '"');
       out.push('>\n');
-      for (const item of node.children) renderBlocks(item, out, refs, node.tight);
+      for (const item of node.children) renderBlocks(item, out, refs, node.tight, istate);
       out.push(node.ordered ? '</ol>\n' : '</ul>\n');
       break;
     }
@@ -1117,7 +1158,7 @@ function renderBlocks(node, out, refs, inTightList) {
           if (inTightList) {
             // tight: paragraph renders as bare inline content
             if (k === 0 && node.task !== undefined) out.push(node.task);
-            inlineToHtml(ch.content, refs, out);
+            inlineToHtml(ch.content, refs, out, istate);
             // in a tight item, paragraphs are separated by \n only when the
             // next sibling is also a paragraph (not a nested list/block)
             if (k < kids.length - 1 && kids[k + 1].t === 'para') out.push('\n');
@@ -1125,16 +1166,16 @@ function renderBlocks(node, out, refs, inTightList) {
             if (k === 0 && node.task !== undefined) {
               out.push('<p>');
               out.push(node.task);
-              inlineToHtml(ch.content, refs, out);
+              inlineToHtml(ch.content, refs, out, istate);
               out.push('</p>\n');
             } else {
               out.push('<p>');
-              inlineToHtml(ch.content, refs, out);
+              inlineToHtml(ch.content, refs, out, istate);
               out.push('</p>\n');
             }
           }
         } else {
-          renderBlocks(ch, out, refs, false);
+          renderBlocks(ch, out, refs, false, istate);
         }
       }
       out.push('</li>\n');
@@ -1147,7 +1188,7 @@ function renderBlocks(node, out, refs, inTightList) {
         const a = node.align[k];
         if (a) out.push(' align="' + a + '"');
         out.push('>');
-        inlineToHtml(node.header[k], refs, out);
+        inlineToHtml(node.header[k], refs, out, istate);
         out.push('</th>\n');
       }
       out.push('</tr>\n</thead>\n');
@@ -1160,7 +1201,7 @@ function renderBlocks(node, out, refs, inTightList) {
             const a = node.align[k];
             if (a) out.push(' align="' + a + '"');
             out.push('>');
-            inlineToHtml(node.rows[r][k], refs, out);
+            inlineToHtml(node.rows[r][k], refs, out, istate);
             out.push('</td>\n');
           }
           out.push('</tr>\n');
@@ -1455,7 +1496,39 @@ function parseBlocks(src, refs) {
     return { type, start, delim, bullet, contentIndent: ind + markerLen + spaces, empty: false };
   }
 
+  // Expand tabs in the leading whitespace of the remaining line content,
+  // using each tab's column in the original source line (tab stops every
+  // 4 columns). Only the leading whitespace is expanded; tabs later in
+  // the line are preserved verbatim. Advances the cursor past the leading
+  // whitespace and returns the expanded leading whitespace plus the rest
+  // of the line.
+  function expandLeadingWs(line) {
+    let out = '';
+    while (true) {
+      const c = curCh(line);
+      if (c === 32) { out += ' '; advCh(line); }
+      else if (c === 9) { const span = 4 - (line.col & 3); out += ' '.repeat(span); advCh(line); }
+      else break;
+    }
+    return out + remStr(line);
+  }
+
   function addCodeLine(node, line) {
+    // A blank content line breaks fenced-code absorption of later
+    // non-matching lines (after a blank line a line must match the
+    // container to stay in the block).
+    node._prevBlank = isBlankL(line);
+    if (node.inContainer) {
+      // Inside a list item / blockquote, the container indent was already
+      // consumed and leading tabs expand by their original column; the
+      // fence (or 4-space) indent is then removed from the expanded text.
+      const expanded = expandLeadingWs(line);
+      const dedent = node.fenced ? node.fenceIndent : 4;
+      let s = expanded, rem = dedent;
+      while (rem > 0 && s.charCodeAt(0) === 32) { s = s.slice(1); rem--; }
+      node.content += s + '\n';
+      return;
+    }
     if (node.fenced) {
       advIndent(line, node.fenceIndent);
       node.content += remStr(line) + '\n';
@@ -1532,7 +1605,7 @@ function parseBlocks(src, refs) {
             const sp = info.search(/[ \t]/);
             if (sp >= 0) info = info.slice(0, sp);
             info = unescapeStr(info);
-            const node = { t: 'code', fenced: true, fenceChar: c, fenceLen: j, fenceIndent: ind, info, content: '' };
+            const node = { t: 'code', fenced: true, fenceChar: c, fenceLen: j, fenceIndent: ind, info, content: '', inContainer: stack.some(b => b.t === 'item' || b.t === 'quote') };
             closeListIfNeeded();
             openBlock(node);
             return node;
@@ -1595,7 +1668,7 @@ function parseBlocks(src, refs) {
     }
     // indented code (not when interrupting a paragraph)
     if (!interruptPara && ind >= 4) {
-      const node = { t: 'code', fenced: false, content: '' };
+      const node = { t: 'code', fenced: false, content: '', inContainer: stack.some(b => b.t === 'item' || b.t === 'quote') };
       closeListIfNeeded();
       openBlock(node);
       addCodeLine(node, line);
@@ -1640,6 +1713,26 @@ function parseBlocks(src, refs) {
     delete t.lines;
     stack.pop();
     finalize(t);
+    return true;
+  }
+
+  // A fenced code block inside a list item absorbs content lines that do
+  // not match the list item (its content is literal text); only a closing
+  // fence line is a block boundary. A fenced code block directly inside a
+  // blockquote does not absorb: a line without '>' closes the quote.
+  // Returns true when the line should be added to the open fenced code
+  // block as content, without closing any container.
+  function tryAbsorbCodeLine(line, failIdx, blank) {
+    const tipBlk = tip();
+    if (tipBlk.t !== 'code' || !tipBlk.fenced || blank || tipBlk._prevBlank) return false;
+    let inList = false;
+    for (let k = failIdx; k < stack.length; k++) if (stack[k].t === 'item') { inList = true; break; }
+    if (!inList) return false;
+    // a closing fence line is a boundary, not content
+    const st = saveL(line);
+    const res = matchLeaf(line, tipBlk, blank);
+    if (res === 2) { restL(line, st); return false; }
+    restL(line, st);
     return true;
   }
 
@@ -1722,6 +1815,7 @@ function parseBlocks(src, refs) {
       if (blk.t === 'quote') {
         if (isBlankL(line)) blankHit = true;
         if (!matchQuote(line)) {
+          if (tryAbsorbCodeLine(line, i, blank)) { lastMatched = stack.length - 1; break; }
           // Lazy continuation only if the line has content and does NOT
           // start a new block that can interrupt the paragraph. A line
           // that is blank after the markers it did match (e.g. a lone '>')
@@ -1738,6 +1832,7 @@ function parseBlocks(src, refs) {
       if (blk.t === 'item') {
         if (isBlankL(line)) blankHit = true;
         if (!matchItem(line, blk)) {
+          if (tryAbsorbCodeLine(line, i, blank)) { lastMatched = stack.length - 1; break; }
           if (tip().t === 'para' && !blank && !wouldInterrupt(line, tipInList())) { lazy = true; lastMatched = stack.length - 1; }
           break;
         }
@@ -1826,7 +1921,8 @@ function parse(src) {
   const refs = new Map();
   const doc = parseBlocks(src, refs);
   const out = [];
-  renderBlocks(doc, out, refs, false);
+  const istate = { inLink: false };
+  renderBlocks(doc, out, refs, false, istate);
   return out.join('');
 }
 
