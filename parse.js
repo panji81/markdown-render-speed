@@ -253,19 +253,18 @@ function parseLinkDestTitle(str, j) {
 function parseLinkTail(str, j, bracket, refs) {
   const n = str.length;
   let k = j;
-  // inline link: '(' must follow ']' immediately (no space)
+  // inline link: '(' must follow ']' immediately (no space); if the
+  // destination/title is invalid, fall through to the shortcut reference
   if (k < n && str.charCodeAt(k) === 40) { // (...
-    return parseLinkDestTitle(str, k + 1);
-  }
-  // full reference: '[' must also follow ']' immediately (no space/newline)
-  if (k < n && str.charCodeAt(k) === 91) { // [label]
+    const inl = parseLinkDestTitle(str, k + 1);
+    if (inl) return inl;
+  } else if (k < n && str.charCodeAt(k) === 91) { // [label]
     const lab = parseLabel(str, k);
     if (lab) {
       const key = lab.label === '' ? normalizeLabel(str.slice(bracket.strIdx + 1, bracket.closeIdx)) : normalizeLabel(lab.label);
       const ref = refs.get(key);
       if (ref) return { href: ref.dest, title: ref.title, end: lab.end };
     }
-    return null;
   }
   // shortcut reference: label is the bracket's own text
   const key = normalizeLabel(str.slice(bracket.strIdx + 1, bracket.closeIdx));
@@ -357,6 +356,20 @@ function stripTags(html) {
       if (j === -1) { out += html.slice(i); break; }
       i = j + 1;
     } else { out += html[i]; i++; }
+  }
+  return out;
+}
+
+// Plain-text content of inline nodes (for image alt text): an image
+// contributes its own alt, a link/emphasis contributes its children.
+function plainText(nodes) {
+  let out = '';
+  for (const nd of nodes) {
+    if (nd.t === 'text' || nd.t === 'code' || nd.t === 'raw') out += nd.s;
+    else if (nd.t === 'image') out += nd.alt;
+    else if (nd.t === 'link' || nd.t === 'em' || nd.t === 'strong' || nd.t === 'del') out += plainText(nd.c);
+    else if (nd.t === 'html') out += stripTags(nd.s);
+    else if (nd.t === 'br') out += '\n';
   }
   return out;
 }
@@ -665,9 +678,7 @@ export function parseInline(str, refs) {
         processEmphasis(childNodes, childDelims);
         let linkNode;
         if (br.image) {
-          const tmp = [];
-          renderInline(childNodes, tmp);
-          linkNode = { t: 'image', href: link.href, title: link.title, alt: stripTags(tmp.join('')) };
+          linkNode = { t: 'image', href: link.href, title: link.title, alt: plainText(childNodes) };
         } else {
           linkNode = { t: 'link', href: link.href, title: link.title, c: childNodes };
         }
@@ -968,7 +979,8 @@ function parseRefdefs(text, refs) {
     }
     if (k3 < n) k3++;
     const key = normalizeLabel(lab.label);
-    if (key && !refs.has(key)) refs.set(key, { dest, title });
+    if (!key) break; // empty (or whitespace-only) label is not a refdef
+    if (!refs.has(key)) refs.set(key, { dest, title });
     pos = k3; any = true;
   }
   return any ? text.slice(pos) : null;
