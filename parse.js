@@ -363,7 +363,9 @@ function aTagKind(tagStr) {
   if (k === j) return null;
   if (tagStr.slice(j, k).toLowerCase() !== 'a') return null;
   if (closing) return 'a-close';
-  if (tagStr.length >= 2 && tagStr.charCodeAt(tagStr.length - 2) === 47 && tagStr.charCodeAt(tagStr.length - 1) === 62) return null; // <a ... />
+  // only a bare <a/> (tag name immediately followed by '/>') is
+  // self-closing; <a /> and <a href="u"/> are opening tags
+  if (k === tagStr.length - 2 && tagStr.charCodeAt(k) === 47 && tagStr.charCodeAt(k + 1) === 62) return null;
   // a bare <a> (no attributes, only whitespace before '>') is an anchor,
   // not a link: it does not open a link context
   let m = k;
