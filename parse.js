@@ -272,19 +272,18 @@ function parseLinkTail(str, j, bracket, refs) {
 
 // Process emphasis delimiters on a nodes array with its delims list.
 function processEmphasis(nodes, delims) {
-  const bottom = { '*': -1, '_': -1, '~': -1 };
   let ci = 0;
   while (ci < delims.length) {
     const closer = delims[ci];
     if (!closer.canClose || closer.len === 0) { ci++; continue; }
     let oi = -1;
-    for (let j = ci - 1; j >= 0 && j >= bottom[closer.ch]; j--) {
+    for (let j = ci - 1; j >= 0; j--) {
       const opener = delims[j];
       if (opener.ch !== closer.ch || !opener.canOpen || opener.len === 0) continue;
       if ((opener.canClose || closer.canOpen) && ((opener.len + closer.len) % 3 === 0) && (opener.len % 3 !== 0 || closer.len % 3 !== 0)) continue;
       oi = j; break;
     }
-    if (oi === -1) { bottom[closer.ch] = ci; ci++; continue; }
+    if (oi === -1) { ci++; continue; }
     const opener = delims[oi];
     const use = (opener.len >= 2 && closer.len >= 2) ? 2 : 1;
     const tag = closer.ch === '~' ? 'del' : (use === 2 ? 'strong' : 'em');
@@ -1564,7 +1563,19 @@ function parseBlocks(src, refs) {
     const line = LC(lines[li]);
     const blank = isBlankL(line);
     // a blank line inside a code block is code content, not a separator
-    if (blank && tip().t !== 'code') { for (let k = 1; k < stack.length; k++) stack[k]._lastLineBlank = true; }
+    // mark the blank line only on the blocks down to the innermost list
+    // item: a blank line inside a nested list loosens that list, not the
+    // outer list that contains it
+    if (blank && tip().t !== 'code') {
+      let deepestItem = -1;
+      for (let k = stack.length - 1; k >= 1; k--) if (stack[k].t === 'item') { deepestItem = k; break; }
+      // include the innermost item's parent list: that list is a child of
+      // the outer item, and its blank flag decides the outer list's
+      // looseness when a paragraph follows it (cm-325); harmless when it
+      // is the outer item's last child (cm-319)
+      const lo = deepestItem === -1 ? stack.length - 1 : Math.max(1, deepestItem - 1);
+      for (let k = stack.length - 1; k >= lo; k--) stack[k]._lastLineBlank = true;
+    }
     // Phase 1: match open containers
     let lastMatched = 0;
     let consumed = false;
