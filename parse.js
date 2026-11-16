@@ -251,10 +251,11 @@ function parseLinkDestTitle(str, j) {
 function parseLinkTail(str, j, bracket, refs) {
   const n = str.length;
   let k = j;
-  while (k < n && isSpace(str.charCodeAt(k))) k++;
+  // inline link: '(' must follow ']' immediately (no space)
   if (k < n && str.charCodeAt(k) === 40) { // (...
     return parseLinkDestTitle(str, k + 1);
   }
+  while (k < n && isSpace(str.charCodeAt(k))) k++;
   if (k < n && str.charCodeAt(k) === 91) { // [label]
     const lab = parseLabel(str, k);
     if (lab) {
@@ -639,9 +640,13 @@ export function parseInline(str, refs) {
       i += 2; continue;
     }
     if (c === 93) { // ]
+      // only the innermost bracket can close here; an inactive one makes
+      // this ']' literal (it must not fall through to an outer bracket)
       let bi = brackets.length - 1;
-      while (bi >= 0 && !brackets[bi].active) bi--;
-      if (bi < 0) { buf += ']'; i++; continue; }
+      if (bi < 0 || !brackets[bi].active) {
+        if (bi >= 0) brackets.splice(bi, 1);
+        buf += ']'; i++; continue;
+      }
       const br = brackets[bi];
       br.closeIdx = i;
       const link = parseLinkTail(str, i + 1, br, refs);
@@ -667,9 +672,10 @@ export function parseInline(str, refs) {
         flush();
         nodes.splice(startIdx, nodes.length - startIdx, linkNode);
         brackets.splice(bi, 1);
-        // a link cannot contain another link, but an image CAN be inside
-        // a link, so only a link deactivates the remaining brackets
-        if (!br.image) for (const b of brackets) b.active = false;
+        // a link cannot contain another link, but an image CAN contain a
+        // link (in its alt text) and a link CAN contain an image, so only
+        // link brackets are ever deactivated, and only by a link
+        if (!br.image) for (const b of brackets) if (!b.image) b.active = false;
         i = link.end; continue;
       }
       brackets.splice(bi, 1);
@@ -682,7 +688,9 @@ export function parseInline(str, refs) {
       if (gt !== -1 && gt - i < 200) {
         const inner = str.slice(i + 1, gt);
         if (/^[A-Za-z][A-Za-z0-9+.-]{1,31}:/.test(inner) && !inner.includes(' ') && !inner.includes('<') && !inner.includes('\n')) {
-          flush(); nodes.push({ t: 'link', href: inner, title: null, c: [{ t: 'text', s: inner }] });
+          // autolink hrefs percent-encode [ and ] (they would close a link)
+          const href = inner.replace(/\[/g, '%5B').replace(/\]/g, '%5D');
+          flush(); nodes.push({ t: 'link', href, title: null, c: [{ t: 'text', s: inner }] });
           i = gt + 1; matched = true;
         } else if (/^[A-Za-z0-9.!#$%&'*+\/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$/.test(inner)) {
           flush(); nodes.push({ t: 'link', href: 'mailto:' + inner, title: null, c: [{ t: 'text', s: inner }] });
@@ -1237,7 +1245,7 @@ function parseBlocks(src, refs) {
     return null;
   }
   function parseHtmlTag(r) {
-    if (r.length < 2) return null;
+    if (r.length < 2 || r.charCodeAt(0) !== 60) return null; // must start with <
     let i = 1, isClose = false;
     if (r[i] === '/') { isClose = true; i++; }
     let name = '';
