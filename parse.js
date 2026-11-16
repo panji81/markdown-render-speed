@@ -805,6 +805,10 @@ function splitTableRow(line) {
 }
 
 function tryTable(lines) {
+  // the delimiter row must not be indented 4+ spaces
+  let lead = 0;
+  for (let k = 0; k < lines[1].length && lines[1].charCodeAt(k) === 32; k++) lead++;
+  if (lead >= 4) return null;
   const header = splitTableRow(lines[0]);
   if (header.length === 0) return null;
   const delim = splitTableRow(lines[1]);
@@ -1024,6 +1028,12 @@ function parseBlocks(src, refs) {
   const openBlock = (node) => { addChild(node); stack.push(node); return node; };
 
   function finalize(node) {
+    if (node.t === 'html') {
+      node.content = node.lines.join('\n');
+      if (node._eof && trailingNL) node.content += '\n';
+      delete node.lines; delete node._eof;
+      return;
+    }
     if (node.t === 'para') {
       let content = node.lines.join('\n');
       const rest = parseRefdefs(content, refs);
@@ -1252,8 +1262,8 @@ function parseBlocks(src, refs) {
     }
   }
   function addHtmlLine(node, line, isLast) {
-    node.content += remStr(line);
-    if (!(isLast && !trailingNL)) node.content += '\n';
+    node.lines.push(remStr(line));
+    if (isLast) node._eof = true;
   }
   function addParaLine(node, line) {
     const ind = indentCols(line);
@@ -1337,9 +1347,11 @@ function parseBlocks(src, refs) {
       let hs = htmlStart(r);
       if (!hs && !interruptPara) hs = htmlStart7(r);
       if (hs) {
-        const node = { t: 'html', htmlType: hs.type, htmlTag: hs.tag, content: '' };
+        const node = { t: 'html', htmlType: hs.type, htmlTag: hs.tag, lines: [] };
         closeListIfNeeded();
         addChild(node);
+        // HTML block content keeps the line's leading spaces.
+        restL(line, st);
         addHtmlLine(node, line, isLast);
         if (hs.type >= 1 && hs.type <= 5 && htmlEndMet(node, r)) {
           finalize(node);
@@ -1408,15 +1420,12 @@ function parseBlocks(src, refs) {
     advCols(line, ind);
     const c = curCh(line);
     if (c !== 61 && c !== 45) { restL(line, st); return false; }
+    // a run of = or -, then only spaces/tabs to end of line
     let j = 0;
-    while (true) {
-      const ch = curCh(line);
-      if (ch === c) { advCh(line); j++; }
-      else if (ch === 32 || ch === 9) advCh(line);
-      else break;
-    }
+    while (curCh(line) === c) { advCh(line); j++; }
+    while (curCh(line) === 32 || curCh(line) === 9) advCh(line);
     if (curCh(line) !== 10 || j === 0) { restL(line, st); return false; }
-    const content = t.lines.join('\n');
+    const content = t.lines.join('\n').replace(/[ \t]+$/g, '').replace(/[ \t]+\n/g, '\n');
     t.t = 'heading'; t.level = c === 61 ? 1 : 2; t.content = content;
     delete t.lines;
     stack.pop();
@@ -1468,10 +1477,12 @@ function parseBlocks(src, refs) {
     let lastMatched = 0;
     let consumed = false;
     let lazy = false;
+    let blankHit = false; // a container matched this blank line (no marker)
     let i = 1;
     while (i < stack.length) {
       const blk = stack[i];
       if (blk.t === 'quote') {
+        if (isBlankL(line)) blankHit = true;
         if (!matchQuote(line)) {
           // Lazy continuation only if the line does NOT start a new block
           // that can interrupt the paragraph.
@@ -1482,12 +1493,16 @@ function parseBlocks(src, refs) {
       }
       if (blk.t === 'list') { lastMatched = i; i++; continue; }
       if (blk.t === 'item') {
+        if (isBlankL(line)) blankHit = true;
         if (!matchItem(line, blk)) {
           if (tip().t === 'para' && !blank && !wouldInterrupt(line)) { lazy = true; lastMatched = stack.length - 1; }
           break;
         }
         lastMatched = i; i++; continue;
       }
+      // A blank line that only matched via a container's blank rule is
+      // NOT content for a code block inside that container.
+      if (blk.t === 'code' && blank && blankHit) { break; }
       const res = matchLeaf(line, blk, blank);
       if (res === 1) { lastMatched = i; }
       else if (res === 2) { consumed = true; lastMatched = i - 1; }
@@ -1502,6 +1517,24 @@ function parseBlocks(src, refs) {
     if (t.t === 'code') { addCodeLine(t, line); continue; }
     if (t.t === 'html') { addHtmlLine(t, line, isLast); continue; }
     if (t.t === 'para') {
+      if (lazy) {
+        // A lazy continuation line that looks like a setext underline is
+        // paragraph text, not an underline: neutralize it with 4 spaces.
+        const st = saveL(line);
+        const raw = remStr(line);
+        const ind = indentCols(line);
+        if (ind <= 3) {
+          advCols(line, ind);
+          const c = curCh(line);
+          if (c === 61 || c === 45) {
+            let j = 0;
+            while (curCh(line) === c) { advCh(line); j++; }
+            while (curCh(line) === 32 || curCh(line) === 9) advCh(line);
+            if (curCh(line) === 10 && j > 0) { t.lines.push('    ' + raw); restL(line, st); continue; }
+          }
+        }
+        restL(line, st);
+      }
       if (trySetext(t, line)) continue;
       if (wouldInterrupt(line)) {
         // close the paragraph first; the new block opens under its parent
