@@ -1500,7 +1500,7 @@ function parseBlocks(src, refs) {
     const isLast = li === lines.length - 1;
     const line = LC(lines[li]);
     const blank = isBlankL(line);
-    for (let k = 1; k < stack.length; k++) stack[k]._lastLineBlank = blank;
+    if (blank) { for (let k = 1; k < stack.length; k++) stack[k]._lastLineBlank = true; }
     // Phase 1: match open containers
     let lastMatched = 0;
     let consumed = false;
@@ -1531,9 +1531,6 @@ function parseBlocks(src, refs) {
         markerConsumed = true;
         lastMatched = i; i++; continue;
       }
-      // A blank line that only matched via a container's blank rule is
-      // NOT content for a code block inside that container.
-      if (blk.t === 'code' && blank && blankHit) { break; }
       // A spaces-only remainder is paragraph content when a container
       // marker was consumed (the spaces follow the marker); otherwise
       // the line is blank and closes the paragraph.
@@ -1548,8 +1545,12 @@ function parseBlocks(src, refs) {
     while (stack.length - 1 > lastMatched) {
       const b = stack.pop();
       if (b.t === 'html' && blank) b._noTrailNL = true;
+      if (isBlankL(line)) b._lastLineBlank = true;
       finalize(b);
     }
+    // a blank remainder (after container markers) counts as a blank line
+    // for looseness, even when the raw line was not blank (e.g. ">>")
+    if (isBlankL(line)) { for (let k = 1; k < stack.length; k++) stack[k]._lastLineBlank = true; }
     if (consumed) continue;
     // Phase 2
     const t = tip();
