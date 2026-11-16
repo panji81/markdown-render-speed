@@ -1126,7 +1126,7 @@ function parseBlocks(src, refs) {
   }
   // leaf match: 0 = no match, 1 = match (content line), 2 = closing fence (line consumed), 3 = html end line (line is content, then close)
   function matchLeaf(line, blk, blank) {
-    if (blk.t === 'para') return isBlankL(line) ? 0 : 1;
+    if (blk.t === 'para') return curCh(line) === 10 ? 0 : 1;
     if (blk.t === 'code') {
       if (blk.fenced) {
         const st = saveL(line);
@@ -1506,6 +1506,7 @@ function parseBlocks(src, refs) {
     let consumed = false;
     let lazy = false;
     let blankHit = false; // a container matched this blank line (no marker)
+    let markerConsumed = false; // a container marker was consumed this line
     let i = 1;
     while (i < stack.length) {
       const blk = stack[i];
@@ -1517,6 +1518,7 @@ function parseBlocks(src, refs) {
           if (tip().t === 'para' && !blank && !wouldInterrupt(line)) { lazy = true; lastMatched = stack.length - 1; }
           break;
         }
+        markerConsumed = true;
         lastMatched = i; i++; continue;
       }
       if (blk.t === 'list') { lastMatched = i; i++; continue; }
@@ -1526,11 +1528,16 @@ function parseBlocks(src, refs) {
           if (tip().t === 'para' && !blank && !wouldInterrupt(line)) { lazy = true; lastMatched = stack.length - 1; }
           break;
         }
+        markerConsumed = true;
         lastMatched = i; i++; continue;
       }
       // A blank line that only matched via a container's blank rule is
       // NOT content for a code block inside that container.
       if (blk.t === 'code' && blank && blankHit) { break; }
+      // A spaces-only remainder is paragraph content when a container
+      // marker was consumed (the spaces follow the marker); otherwise
+      // the line is blank and closes the paragraph.
+      if (blk.t === 'para' && isBlankL(line) && !markerConsumed) { break; }
       const res = matchLeaf(line, blk, blank);
       if (res === 1) { lastMatched = i; }
       else if (res === 2) { consumed = true; lastMatched = i - 1; }
