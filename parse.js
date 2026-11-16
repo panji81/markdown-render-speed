@@ -1859,7 +1859,9 @@ function parseBlocks(src, refs) {
           if (tip().t === 'para' && !blank && !wouldInterrupt(line, tipInList())) { lazy = true; lastMatched = stack.length - 1; }
           break;
         }
-        markerConsumed = true;
+        // a blank line continues the item but consumes no marker, so it
+        // must still close a paragraph (a tab-only line is blank)
+        if (!blank) markerConsumed = true;
         lastMatched = i; i++; continue;
       }
       // A spaces-only remainder is paragraph content when a container
