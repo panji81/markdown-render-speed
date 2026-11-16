@@ -649,7 +649,7 @@ function parseSchemeAutolink(str, i) {
 // Parse an extended email autolink ending at '@' at position atIdx, with the
 // local part being the maximal email-local run ending at atIdx. Returns
 // {start, end, text} or null. `before` is the char before the local part.
-function parseEmailAutolink(str, atIdx) {
+function parseEmailAutolink(str, atIdx, allowTrailingUnderscore) {
   const n = str.length;
   let ls = atIdx;
   while (ls > 0 && isEmailLocalChar(str.charCodeAt(ls - 1))) ls--;
@@ -664,7 +664,9 @@ function parseEmailAutolink(str, atIdx) {
   let ds = k;
   while (k < n && (isDomainChar(str.charCodeAt(k)) || str.charCodeAt(k) === 46)) k++;
   // a trailing '_' means the email is part of a larger token: no autolink
-  if (k < n && str.charCodeAt(k) === 95) return null;
+  // (unless the '_' is the closer of an enclosing _ / __ emphasis, which
+  // the caller signals via allowTrailingUnderscore)
+  if (!allowTrailingUnderscore && k < n && str.charCodeAt(k) === 95) return null;
   let dom = str.slice(ds, k);
   // strip trailing dots (a.b-c_d@a.b. links a.b-c_d@a.b, '.' literal)
   while (dom.endsWith('.')) dom = dom.slice(0, -1);
@@ -748,7 +750,7 @@ export function parseInline(str, refs, istate) {
       }
       if (!canOpen && !canClose) { buf += str.slice(i, j); i = j; continue; }
       flush();
-      const marker = { t: 'delim', ch: String.fromCharCode(c), len: run, canOpen, canClose };
+      const marker = { t: 'delim', ch: String.fromCharCode(c), len: run, canOpen, canClose, pos: i };
       nodes.push(marker); delims.push(marker);
       i = j; continue;
     }
@@ -886,7 +888,18 @@ export function parseInline(str, refs, istate) {
       buf += str[i]; i++; continue;
     }
     if (c === 64) { // @ — possible extended email autolink
-      const em = parseEmailAutolink(str, i);
+      // inside an unmatched '_' opener? (nearest '_' delim before the '@'
+      // is an opener => the '_' after the domain is its closer, not part
+      // of a larger token)
+      let inUnderscore = false;
+      for (let d = delims.length - 1; d >= 0; d--) {
+        const m = delims[d];
+        if (m.ch !== '_') continue;
+        if (m.pos >= i) continue;
+        inUnderscore = !!m.canOpen;
+        break;
+      }
+      const em = parseEmailAutolink(str, i, inUnderscore);
       if (!istate.inLink && em && em.start < i) {
         // the local part cannot extend before the current text buffer: a
         // leading run of '_' that is an emphasis delimiter (the __ of
