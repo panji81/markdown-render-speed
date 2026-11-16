@@ -554,10 +554,54 @@ function parseSchemeAutolink(str, i) {
     break;
   }
   if (len < 2) return null;
-  if (j + 2 >= n || str.charCodeAt(j) !== 58 || str.charCodeAt(j + 1) !== 47 || str.charCodeAt(j + 2) !== 47) return null;
-  const hostStart = j + 3;
-  const end = parseHostPath(str, hostStart, []);
-  if (end === -1 || end <= hostStart) return null;
+  if (j >= n || str.charCodeAt(j) !== 58) return null; // need ':'
+  // scheme://host/path
+  if (j + 2 < n && str.charCodeAt(j + 1) === 47 && str.charCodeAt(j + 2) === 47) {
+    const hostStart = j + 3;
+    const end = parseHostPath(str, hostStart, []);
+    if (end === -1 || end <= hostStart) return null;
+    return { end, text: str.slice(i, end) };
+  }
+  // scheme:opaque (mailto:, xmpp:, ...) — scan a URL run, then validate
+  // that it carries a dotted domain; strip trailing punctuation
+  let k = j + 1;
+  const urlStart = k;
+  while (k < n) {
+    const c = str.charCodeAt(k);
+    if (c === 32 || c === 10 || c === 9 || c === 60 || c === 62 || c === 34 || c === 96) break;
+    if (c === 38) { // &entity; terminates
+      let m = k + 1;
+      while (m < n && ((str.charCodeAt(m) >= 65 && str.charCodeAt(m) <= 90) || (str.charCodeAt(m) >= 97 && str.charCodeAt(m) <= 122) || (str.charCodeAt(m) >= 48 && str.charCodeAt(m) <= 57))) m++;
+      if (m > k + 1 && m < n && str.charCodeAt(m) === 59) break;
+    }
+    k++;
+  }
+  let end = k;
+  while (end > urlStart) {
+    const c = str.charCodeAt(end - 1);
+    if (c === 46 || c === 44 || c === 59 || c === 58 || c === 33 || c === 63 || c === 47 || c === 41) end--;
+    else break;
+  }
+  if (end <= urlStart) return null;
+  const url = str.slice(urlStart, end);
+  // the domain is after the first '@' (if any), up to the first '/'
+  const atIdx = url.indexOf('@');
+  const domStart = atIdx === -1 ? 0 : atIdx + 1;
+  let domEnd = url.indexOf('/', domStart);
+  if (domEnd === -1) domEnd = url.length;
+  const dom = url.slice(domStart, domEnd);
+  if (!dom || !dom.includes('.')) return null;
+  const parts = dom.split('.');
+  for (const lab of parts) {
+    if (!lab) return null;
+    if (lab[0] === '-' || lab[lab.length - 1] === '-') return null;
+    for (let q = 0; q < lab.length; q++) if (!isDomainChar(lab.charCodeAt(q))) return null;
+  }
+  const tld = parts[parts.length - 1];
+  for (let q = 0; q < tld.length; q++) {
+    const c = tld.charCodeAt(q);
+    if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122))) return null;
+  }
   return { end, text: str.slice(i, end) };
 }
 
@@ -578,7 +622,11 @@ function parseEmailAutolink(str, atIdx) {
   let k = atIdx + 1;
   let ds = k;
   while (k < n && (isDomainChar(str.charCodeAt(k)) || str.charCodeAt(k) === 46)) k++;
-  const dom = str.slice(ds, k);
+  // a trailing '_' means the email is part of a larger token: no autolink
+  if (k < n && str.charCodeAt(k) === 95) return null;
+  let dom = str.slice(ds, k);
+  // strip trailing dots (a.b-c_d@a.b. links a.b-c_d@a.b, '.' literal)
+  while (dom.endsWith('.')) dom = dom.slice(0, -1);
   if (!dom) return null;
   const parts = dom.split('.');
   if (parts.length < 2) return null;
@@ -588,12 +636,12 @@ function parseEmailAutolink(str, atIdx) {
     for (let q = 0; q < lab.length; q++) if (!isDomainChar(lab.charCodeAt(q))) return null;
   }
   const tld = parts[parts.length - 1];
-  if (tld.length < 2) return null;
+  // GFM extended emails allow a 1-letter TLD (a.b-c_d@a.b is a link)
   for (let q = 0; q < tld.length; q++) {
     const c = tld.charCodeAt(q);
     if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122))) return null;
   }
-  return { start: ls, end: k, text: str.slice(ls, k) };
+  return { start: ls, end: ds + dom.length, text: str.slice(ls, ds + dom.length) };
 }
 
 // ---------- the inline scanner ----------
@@ -1163,8 +1211,8 @@ function parseBlocks(src, refs) {
       delete node.lines;
       const par = node._parent;
       if (par && par.t === 'item' && par.children[0] === node && par.task === undefined) {
-        if (content.startsWith('[ ] ')) { par.task = '<input disabled="" type="checkbox">'; node.content = content.slice(4); }
-        else if (content.startsWith('[x] ') || content.startsWith('[X] ')) { par.task = '<input checked="" disabled="" type="checkbox">'; node.content = content.slice(4); }
+        if (content.startsWith('[ ] ')) { par.task = '<input disabled="" type="checkbox">'; node.content = content.slice(3); }
+        else if (content.startsWith('[x] ') || content.startsWith('[X] ')) { par.task = '<input checked="" disabled="" type="checkbox">'; node.content = content.slice(3); }
       }
     } else if (node.t === 'list') {
       let loose = false;
